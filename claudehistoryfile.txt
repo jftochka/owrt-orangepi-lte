@@ -61,3 +61,5 @@
 [2026-09-03 09:58] mac: tools/rt: simei esim info/list, status --raw on the real eUICC; clear luci cache
 [2026-09-03 09:58] mac: simei: all-zero IMEI invalid, register skips blank IMEI, status flags it; tests 11; sync 02/03 scripts; local tests
 [2026-09-03 10:05] mac: tools/rt push simei /; router tests; simei register DENT; simei status
+[2026-09-03 10:05] mac: git commit + push (blank IMEI handling, scripts sync)
+[2026-09-03 10:12] mac: tools/rt: modem registration check (CREG/CEREG/COPS/QNWINFO/CSQ), wwan log

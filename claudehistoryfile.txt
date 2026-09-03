@@ -75,3 +75,5 @@
 [2026-09-03 10:53] mac: strictdoc export --formats=html2pdf docs (debug)
 [2026-09-03 10:56] mac: strictdoc config with HTML2PDF feature; export html2pdf
 [2026-09-03 11:00] mac: PATH=~/.venvs/strictdoc/bin strictdoc export --formats=html2pdf docs
+[2026-09-03 11:05] mac: docs PDF copied to docs/; git commit + push
+[2026-09-03 11:08] mac: final commit of claudehistoryfile.txt; git push

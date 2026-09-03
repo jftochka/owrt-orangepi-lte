@@ -1,0 +1,8 @@
+{
+	"luci-app-simei": {
+		"description": "Grant access to the simei TUI page",
+		"read": {
+			"uci": [ "ttyd", "simei" ]
+		}
+	}
+}

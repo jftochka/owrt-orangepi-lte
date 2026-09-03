@@ -1,0 +1,7 @@
+# per-host state, not part of the project
+tools/known_hosts
+tools/router.env
+tools/.bootstrap.out
+*.new
+*.tmp.*
+.DS_Store

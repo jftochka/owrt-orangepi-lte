@@ -1,0 +1,21 @@
+{
+	"admin/modem": {
+		"title": "Modem",
+		"order": 55,
+		"action": {
+			"type": "firstchild"
+		}
+	},
+
+	"admin/modem/simei": {
+		"title": "SIM / IMEI (TUI)",
+		"order": 5,
+		"action": {
+			"type": "view",
+			"path": "simei/tui"
+		},
+		"depends": {
+			"acl": [ "luci-app-simei" ]
+		}
+	}
+}

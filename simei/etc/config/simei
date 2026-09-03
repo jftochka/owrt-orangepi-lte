@@ -1,0 +1,11 @@
+config global 'global'
+	option at_host '127.0.0.1'
+	option at_port '5000'
+	option tty '/dev/ttyUSB2'
+	option qmi_dev '/dev/cdc-wdm0'
+	option wwan_iface 'wwan'
+	option wwan_dev 'wwan0'
+	option auto_apply '0'
+	option esim_backend 'at'
+	option esim_tty '/dev/ttyUSB3'
+

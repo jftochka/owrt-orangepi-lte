@@ -1,0 +1,37 @@
+#!/bin/sh
+# ssh/scp helper for the router. Reads ROUTER_IP from tools/router.env (written by 01-bootstrap-net.sh).
+#   tools/rt "command ..."          run a command on the router
+#   tools/rt -                      run the script given on stdin on the router
+#   tools/rt push SRC_DIR DEST_DIR  copy a directory tree to the router (tar over ssh)
+#   tools/rt shell                  interactive ssh
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+[ -f "$HERE/router.env" ] && . "$HERE/router.env"
+ROUTER_IP=${ROUTER_IP:?ROUTER_IP is not set (run tools/01-bootstrap-net.sh first)}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=$HERE/known_hosts -o ConnectTimeout=8 -o LogLevel=ERROR"
+
+case ${1:-} in
+	push)
+		shift
+		# dropbear has no scp/sftp server by default: stream a tar archive instead
+		[ $# -eq 2 ] || { echo "usage: rt push SRC_DIR DEST_DIR" >&2; exit 64; }
+		# shellcheck disable=SC2086
+		COPYFILE_DISABLE=1 tar --format=ustar -C "$1" -cf - . | ssh $SSH_OPTS "root@$ROUTER_IP" "mkdir -p '$2' && tar -C '$2' -xf -"
+		;;
+
+	shell)
+		# shellcheck disable=SC2086
+		exec ssh $SSH_OPTS "root@$ROUTER_IP"
+		;;
+	-)
+		# shellcheck disable=SC2086
+		exec ssh $SSH_OPTS "root@$ROUTER_IP" sh -s
+		;;
+	'')
+		echo "usage: rt \"command\" | rt - < script | rt push SRC DEST | rt shell" >&2; exit 64
+		;;
+	*)
+		# shellcheck disable=SC2086
+		exec ssh $SSH_OPTS "root@$ROUTER_IP" "$@"
+		;;
+esac

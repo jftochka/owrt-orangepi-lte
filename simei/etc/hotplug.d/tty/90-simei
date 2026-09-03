@@ -1,0 +1,13 @@
+#!/bin/sh
+# When the modem's AT port (re)appears, apply the inserted SIM's profile IMEI
+# if simei.global.auto_apply is enabled.
+
+[ "$ACTION" = add ] || exit 0
+tty=$(uci -q get simei.global.tty); tty=${tty:-/dev/ttyUSB2}
+[ "/dev/$DEVNAME" = "$tty" ] || exit 0
+[ "$(uci -q get simei.global.auto_apply)" = 1 ] || exit 0
+
+(
+	sleep 20   # let the modem finish SIM initialisation
+	/usr/sbin/simei apply --yes 2>&1 | logger -t simei
+) &

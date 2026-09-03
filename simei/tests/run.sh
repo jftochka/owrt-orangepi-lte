@@ -1,0 +1,188 @@
+#!/bin/sh
+# simei test suite.
+# Runs on a host (macOS/Linux: uses tests/uci-shim) and on OpenWrt (real uci). Needs socat.
+#   sh simei/tests/run.sh            (TEST_SH=dash to run the script under dash, TEST_PORT to change the port)
+set -u
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$HERE/.." && pwd)
+SIMEI=${SIMEI:-$ROOT/usr/sbin/simei}
+ATBRIDGE=$ROOT/etc/init.d/atbridge
+HOTPLUG=$ROOT/etc/hotplug.d/tty/90-simei
+# installed on a router (tests under /usr/lib/simei/tests): test the installed files
+if [ ! -f "$SIMEI" ] && [ -x /usr/sbin/simei ]; then
+	SIMEI=/usr/sbin/simei; ATBRIDGE=/etc/init.d/atbridge; HOTPLUG=/etc/hotplug.d/tty/90-simei
+fi
+SH=${TEST_SH:-sh}
+PORT=${TEST_PORT:-5001}
+T=$(mktemp -d "${TMPDIR:-/tmp}/simei-test.XXXXXX")
+
+command -v socat >/dev/null 2>&1 || { echo "socat is required"; exit 1; }
+command -v uci >/dev/null 2>&1 || PATH="$HERE/uci-shim:$PATH"
+export PATH
+
+# --- fixtures ---------------------------------------------------------------
+export SIMEI_UCI_DIR="$T/uci"
+mkdir -p "$SIMEI_UCI_DIR" "$T/sysfs" "$T/bin"
+printf "config global 'global'\n\toption at_host '127.0.0.1'\n\toption at_port '%s'\n\n" "$PORT" > "$SIMEI_UCI_DIR/simei"
+export SIMEI_AT_HOST=127.0.0.1 SIMEI_AT_PORT=$PORT SIMEI_FACTORY_FILE="$T/factory"
+export SIMEI_UI=text SIMEI_SYSFS="$T/sysfs" SIMEI_APPLY_TIMEOUT=10 SIMEI_NO_ANSI=1
+unset SIMEI_QMI_DEV
+
+STATE="$T/modem"; mkdir -p "$STATE"
+echo 490154203237518 > "$STATE/imei"
+echo 8938001111111111111 > "$STATE/iccid"
+echo 20 > "$STATE/csq"
+
+# fake uqmi for the live dashboard
+cat > "$T/bin/uqmi" <<'EOF'
+#!/bin/sh
+echo '{"type":"lte","rssi":-65,"rsrq":-9,"rsrp":-95,"snr":12.4}'
+EOF
+chmod +x "$T/bin/uqmi"
+PATH="$T/bin:$PATH"
+
+socat "TCP-LISTEN:$PORT,reuseaddr,fork,bind=127.0.0.1" SYSTEM:"sh '$HERE/fake_modem.sh' '$STATE'" &
+FAKE=$!
+trap 'kill $FAKE 2>/dev/null; rm -rf "$T"' EXIT INT TERM
+sleep 1
+
+# --- harness ----------------------------------------------------------------
+pass=0; fail=0
+ok()  { pass=$((pass + 1)); echo "ok   - $1"; }
+bad() { fail=$((fail + 1)); echo "FAIL - $1"; [ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/       | /'; }
+# expect NAME "pattern" "text"  -> text must contain a line matching the ERE
+expect() { if printf '%s\n' "$3" | grep -qE "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
+reject() { if printf '%s\n' "$3" | grep -qE "$2"; then bad "$1" "$3"; else ok "$1"; fi; }
+run() { "$SH" "$SIMEI" "$@" 2>&1; }
+
+# 1. syntax
+if sh -n "$SIMEI"; then ok "sh -n simei"; else bad "sh -n simei"; fi
+if command -v dash >/dev/null 2>&1; then
+	if dash -n "$SIMEI"; then ok "dash -n simei"; else bad "dash -n simei"; fi
+fi
+if sh -n "$ATBRIDGE"; then ok "sh -n atbridge"; else bad "sh -n atbridge"; fi
+if sh -n "$HOTPLUG"; then ok "sh -n hotplug"; else bad "sh -n hotplug"; fi
+
+# 2. luhn
+out=$(run luhn 49015420323751); expect "luhn: 14 digits -> check digit appended" '^490154203237518$' "$out"
+if run luhn 490154203237518 >/dev/null; then ok "luhn: valid 15-digit IMEI accepted"; else bad "luhn: valid IMEI rejected"; fi
+if run luhn 490154203237519 >/dev/null; then bad "luhn: wrong check digit accepted"; else ok "luhn: wrong check digit rejected"; fi
+if run luhn 12345 >/dev/null; then bad "luhn: short input accepted"; else ok "luhn: short input rejected"; fi
+
+# 3. raw AT and status
+out=$(run at AT+GSN); expect "at: AT+GSN returns IMEI" '^490154203237518$' "$out"; expect "at: final OK present" '^OK$' "$out"
+out=$(run status --raw)
+expect "status: imei"  '^imei=490154203237518$' "$out"
+expect "status: iccid" '^iccid=8938001111111111111$' "$out"
+expect "status: rssi from CSQ 20" '^rssi_dbm=-73$' "$out"
+expect "status: operator" '^operator=FakeTel$' "$out"
+expect "status: LTE" '^act=LTE$' "$out"
+expect "status: no profile yet" '^profile=$' "$out"
+out=$(run status); expect "status: pretty output" '^IMEI *: *490154203237518$' "$out"
+
+# 4. register / list / add
+out=$(run register "Main SIM"); expect "register: creates sim1" 'sim1' "$out"
+out=$(run list)
+expect "list: sim1 with iccid and imei" 'sim1 .*Main SIM.*8938001111111111111.*490154203237518' "$out"
+if run register "Again" >/dev/null 2>&1; then bad "register: duplicate ICCID accepted"; else ok "register: duplicate ICCID rejected"; fi
+out=$(run add "Second SIM" 8938002222222222222); expect "add: creates sim2" 'sim2' "$out"
+out=$(run status --raw); expect "status: profile matched by ICCID" '^profile=sim1$' "$out"; expect "status: imei match" '^imei_match=yes$' "$out"
+
+# 5. move / swap
+out=$(run move sim1 sim2)
+expect "move: sim2 got the IMEI" '^imei=490154203237518$' "$(printf 'imei=%s\n' "$(uci -c "$SIMEI_UCI_DIR" -q get simei.sim2.imei)")"
+expect "move: sim1 IMEI cleared" '^imei=$' "$(printf 'imei=%s\n' "$(uci -c "$SIMEI_UCI_DIR" -q get simei.sim1.imei)")"
+run swap sim1 sim2 >/dev/null
+expect "swap: sim1 has IMEI again" '^imei=490154203237518$' "$(printf 'imei=%s\n' "$(uci -c "$SIMEI_UCI_DIR" -q get simei.sim1.imei)")"
+if run move sim9 sim1 >/dev/null 2>&1; then bad "move: unknown profile accepted"; else ok "move: unknown profile rejected"; fi
+
+# 6. apply
+NEW=$(run luhn 35693803564380)
+run set sim2 imei "$NEW" >/dev/null
+echo 8938002222222222222 > "$STATE/iccid"                # "insert" the second SIM
+: > "$STATE/log"
+out=$(run apply --yes); rc=$?
+if [ $rc -eq 0 ]; then ok "apply: exit 0"; else bad "apply: exit $rc" "$out"; fi
+expect "apply: modem IMEI rewritten" "^$NEW\$" "$(cat "$STATE/imei")"
+expect "apply: EGMR write sent" "^AT\\+EGMR=1,7,\"$NEW\"\$" "$(cat "$STATE/log")"
+expect "apply: modem restarted" '^AT\+CFUN=1,1$' "$(cat "$STATE/log")"
+expect "apply: verified" 'verified' "$out"
+expect "apply: factory IMEI backed up" '^490154203237518$' "$(cat "$T/factory")"
+: > "$STATE/log"
+out=$(run apply --yes); rc=$?
+expect "apply: nothing to do when IMEI matches" 'nothing to do' "$out"
+reject "apply: no EGMR when nothing to do" 'EGMR=1' "$(cat "$STATE/log")"
+uci -c "$SIMEI_UCI_DIR" set simei.sim2.imei=000000000000001
+: > "$STATE/log"
+out=$(run apply --yes); rc=$?
+if [ $rc -eq 2 ]; then ok "apply: invalid IMEI refused with exit 2"; else bad "apply: invalid IMEI exit $rc" "$out"; fi
+reject "apply: no EGMR for invalid IMEI" 'EGMR=1' "$(cat "$STATE/log")"
+out=$(run apply); rc=$?
+if [ $rc -ne 0 ]; then ok "apply: without --yes and no tty refuses"; else bad "apply: wrote without confirmation" "$out"; fi
+echo 8938009999999999999 > "$STATE/iccid"
+out=$(run apply --yes); rc=$?
+if [ $rc -eq 3 ]; then ok "apply: unknown SIM -> exit 3"; else bad "apply: unknown SIM exit $rc" "$out"; fi
+echo 8938002222222222222 > "$STATE/iccid"
+run set sim2 imei "$NEW" >/dev/null
+
+# 7. set validation
+if run set sim1 imei 123 >/dev/null 2>&1; then bad "set: bad IMEI accepted"; else ok "set: bad IMEI rejected"; fi
+out=$(run set sim1 name "Renamed"); out=$(run list); expect "set: rename" 'sim1 .*Renamed' "$out"
+run delete sim2 >/dev/null; out=$(run list); reject "delete: sim2 gone" 'sim2' "$out"
+
+# 8. live --once
+echo 1000 > "$T/sysfs/rx_bytes"; echo 500 > "$T/sysfs/tx_bytes"
+echo 126000 > "$T/sysfs/rx_bytes"; echo 63000 > "$T/sysfs/tx_bytes"
+out=$(SIMEI_LIVE_PREV="1000 500" SIMEI_LIVE_INTERVAL=1 run live --once)
+expect "live: downlink 1.0 Mbit/s" '1\.0 Mbit/s' "$out"
+expect "live: uplink 500 kbit/s" '500 kbit/s' "$out"
+expect "live: RSRP from uqmi" 'RSRP *-95' "$out"
+expect "live: IMEI shown" "$(cat "$STATE/imei")" "$out"
+
+# 9. text TUI smoke test
+out=$(printf 'exit\n' | run); rc=$?
+if [ $rc -eq 0 ]; then ok "tui: exit"; else bad "tui: exit rc=$rc" "$out"; fi
+expect "tui: menu shows live entry" 'live' "$out"
+out=$(printf 'status\n\nexit\n' | run)
+expect "tui: status screen shows IMEI" "IMEI *: *$(cat "$STATE/imei")" "$out"
+
+echo
+# 10. eSIM via the fake lpac
+export SIMEI_LPAC="$HERE/fake_lpac.sh" LPAC_STATE="$T/esim" LPAC_FAKE_MODEM_ICCID_FILE="$STATE/iccid"
+export SIMEI_ESIM_BACKEND=at SIMEI_ESIM_TTY="$T/no-such-tty"
+printf '8948010010087197546|enabled|DENT|Main|DENT\n8948020000000000001|disabled|Play|TelB|Play\n' > "$T/esim"
+echo "8948010010087197546F" > "$STATE/iccid"
+out=$(run esim info); expect "esim info: EID" 'EID *: *89044045900000000000000912484375' "$out"
+out=$(run esim list)
+expect "esim list: DENT enabled" '^8948010010087197546 +enabled +DENT' "$out"
+expect "esim list: Play disabled" '^8948020000000000001 +disabled +Play' "$out"
+out=$(run status --raw); expect "status: ICCID normalised (trailing F dropped)" '^iccid=8948010010087197546$' "$out"
+run add "DENT" 8948010010087197546 "$(cat "$STATE/imei")" >/dev/null
+P2=$(run luhn 86123456789012)
+run add "Play" 8948020000000000001 "$P2" >/dev/null
+out=$(run esim list); expect "esim list: IMEI column from simei profile" "^8948020000000000001 .* $P2\$" "$out"
+: > "$STATE/log"; : > "$T/esim.log"
+out=$(run switch 8948020000000000001 --yes); rc=$?
+if [ $rc -eq 0 ]; then ok "switch: exit 0"; else bad "switch: exit $rc" "$out"; fi
+expect "switch: lpac enable called" '^profile enable 8948020000000000001' "$(cat "$T/esim.log")"
+expect "switch: Play now enabled" '^8948020000000000001\|enabled' "$(cat "$T/esim")"
+expect "switch: DENT now disabled" '^8948010010087197546\|disabled' "$(cat "$T/esim")"
+expect "switch: modem restarted" '^AT\+CFUN=1,1$' "$(cat "$STATE/log")"
+expect "switch: IMEI written for the new SIM" "^$P2\$" "$(cat "$STATE/imei")"
+out=$(run switch Play --yes 2>&1); rc=$?
+if [ $rc -ne 0 ]; then ok "switch: unknown profile name rejected"; else bad "switch: accepted a non-profile name" "$out"; fi
+out=$(run switch sim3 --yes); expect "switch by profile id: already enabled" 'already enabled' "$out"; expect "switch: IMEI unchanged" 'nothing to do' "$out"
+run esim nickname 8948020000000000001 "Work" >/dev/null; out=$(run esim list); expect "esim nickname" '^8948020000000000001 +enabled +Play +Work' "$out"
+if run esim delete 8948020000000000001 --yes >/dev/null 2>&1; then bad "esim delete: deleted an enabled profile"; else ok "esim delete: refuses an enabled profile"; fi
+out=$(run esim disable 8948020000000000001); expect "esim disable" 'disabled' "$out"
+out=$(run esim delete 8948020000000000001 --yes); expect "esim delete" 'deleted' "$out"
+reject "esim delete: gone from the eUICC" '8948020000000000001' "$(cat "$T/esim")"
+out=$(run esim download 'LPA:1$smdp.example$ABC-123'); expect "esim download: listed afterwards" '8949000000000000001 +disabled' "$out"
+expect "esim download: lpac arguments" 'profile download -a LPA:1\$smdp.example\$ABC-123' "$(cat "$T/esim.log")"
+if run esim download 'not-a-code' >/dev/null 2>&1; then bad "esim download: bad code accepted"; else ok "esim download: bad code rejected"; fi
+if run switch 8948099999999999999 --yes >/dev/null 2>&1; then bad "switch: unknown ICCID accepted"; else ok "switch: unknown ICCID rejected"; fi
+out=$(printf 'esim\nback\nexit\n' | run); expect "tui: esim menu lists profiles" '8948010010087197546' "$out"
+
+echo "passed: $pass  failed: $fail"
+[ $fail -eq 0 ]

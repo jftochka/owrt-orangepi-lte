@@ -1,0 +1,100 @@
+#!/bin/sh
+# Minimal `uci` emulation so the simei tests can run on a host without libuci (macOS, Linux).
+# Understands: uci [-q] [-c DIR] get|set|delete|show|commit ...
+# Files use the real UCI syntax (config <type> '<name>' / option <key> '<value>'), so fixtures
+# are interchangeable with the real thing on OpenWrt. Writes are immediate (commit is a no-op).
+
+Q=0; DIR=/etc/config
+while [ $# -gt 0 ]; do
+	case $1 in
+		-q) Q=1; shift ;;
+		-c) DIR=$2; shift 2 ;;
+		-*) shift ;;
+		*) break ;;
+	esac
+done
+OP=${1:-}; ARG=${2:-}
+
+notfound() { [ $Q -eq 1 ] || echo "uci: Entry not found" >&2; exit 1; }
+
+case $OP in
+	commit) exit 0 ;;
+	get|set|delete|show) ;;
+	*) echo "uci-shim: unsupported operation '$OP'" >&2; exit 2 ;;
+esac
+
+PKG=${ARG%%.*}; REST=${ARG#"$PKG"}; REST=${REST#.}
+VAL=; case $REST in *=*) VAL=${REST#*=}; REST=${REST%%=*} ;; esac
+SEC=${REST%%.*}; OPT=${REST#"$SEC"}; OPT=${OPT#.}
+FILE="$DIR/$PKG"
+[ -f "$FILE" ] || notfound
+
+AWK='
+function unq(s) {
+	if (substr(s, 1, 1) == q) s = substr(s, 2)
+	if (substr(s, length(s), 1) == q) s = substr(s, 1, length(s) - 1)
+	return s
+}
+BEGIN { q = sprintf("%c", 39); n = 0 }
+/^config[ \t]/ { n++; type[n] = $2; name[n] = unq($3); nopt[n] = 0; next }
+/^[ \t]*option[ \t]/ {
+	k = $2; $1 = ""; $2 = ""; v = $0; sub(/^[ \t]+/, "", v); v = unq(v)
+	nopt[n]++; okey[n, nopt[n]] = k; oval[n, nopt[n]] = v; next
+}
+END {
+	if (op == "show") {
+		for (i = 1; i <= n; i++) {
+			print pkg "." name[i] "=" type[i]
+			for (j = 1; j <= nopt[i]; j++) print pkg "." name[i] "." okey[i, j] "=" q oval[i, j] q
+		}
+		exit 0
+	}
+	idx = 0
+	for (i = 1; i <= n; i++) if (name[i] == sec) idx = i
+	if (op == "get") {
+		if (!idx) exit 1
+		if (opt == "") { print type[idx]; exit 0 }
+		for (j = 1; j <= nopt[idx]; j++) if (okey[idx, j] == opt) { print oval[idx, j]; exit 0 }
+		exit 1
+	}
+	if (op == "set") {
+		if (opt == "") {
+			if (idx) type[idx] = val
+			else { n++; type[n] = val; name[n] = sec; nopt[n] = 0 }
+		} else {
+			if (!idx) exit 1
+			done = 0
+			for (j = 1; j <= nopt[idx]; j++) if (okey[idx, j] == opt) { oval[idx, j] = val; done = 1 }
+			if (!done) { nopt[idx]++; okey[idx, nopt[idx]] = opt; oval[idx, nopt[idx]] = val }
+		}
+	}
+	if (op == "delete") {
+		if (!idx) exit 1
+		if (opt == "") type[idx] = ""
+		else {
+			hit = 0
+			for (j = 1; j <= nopt[idx]; j++) if (okey[idx, j] == opt) { okey[idx, j] = ""; hit = 1 }
+			if (!hit) exit 1
+		}
+	}
+	for (i = 1; i <= n; i++) {
+		if (type[i] == "") continue
+		print "config " type[i] " " q name[i] q
+		for (j = 1; j <= nopt[i]; j++) if (okey[i, j] != "") print "\toption " okey[i, j] " " q oval[i, j] q
+		print ""
+	}
+}'
+
+case $OP in
+	get|show)
+		awk -v op="$OP" -v pkg="$PKG" -v sec="$SEC" -v opt="$OPT" -v val="$VAL" "$AWK" "$FILE" || notfound
+		;;
+	set|delete)
+		TMP="$FILE.tmp.$$"
+		if awk -v op="$OP" -v pkg="$PKG" -v sec="$SEC" -v opt="$OPT" -v val="$VAL" "$AWK" "$FILE" > "$TMP"; then
+			mv "$TMP" "$FILE"
+		else
+			rm -f "$TMP"; notfound
+		fi
+		;;
+esac

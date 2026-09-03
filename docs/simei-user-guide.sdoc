@@ -1,0 +1,302 @@
+[DOCUMENT]
+TITLE: OrangePi Zero3 LTE router: simei user guide
+VERSION: 1.0
+DATE: 2026-09-03
+
+[TEXT]
+STATEMENT: >>>
+This guide explains how to operate the OrangePi Zero3 router (OpenWrt 25.12.1) with the
+Quectel EG25-G modem and its embedded eUICC: how to reach the router, how to manage eSIM
+profiles, and how to keep one IMEI per SIM profile with the **simei** tool.
+
+Changing an IMEI is illegal in some countries. simei writes whatever IMEI you assign to a SIM
+profile into your own modem; the responsibility for using it is yours.
+<<<
+
+[[SECTION]]
+TITLE: Reaching the router
+
+[TEXT]
+STATEMENT: >>>
+The board joins the home LAN as a DHCP client with hostname ``orangepi-lte``. Its current
+address is shown by the home router's DHCP table; from the Mac it is kept in ``tools/router.env``.
+Over Tailscale the board is always ``orangepi-lte`` (100.111.153.32).
+<<<
+
+[REQUIREMENT]
+UID: ACCESS-1
+TITLE: Web interface (LuCI)
+STATEMENT: >>>
+Open ``http://<router-ip>/`` in a browser. Log in as ``root`` with an empty password until a
+password is set (LuCI > System > Administration). Use plain ``http``: the web TUI is embedded
+over http and browsers refuse to embed it inside an https page.
+<<<
+
+[REQUIREMENT]
+UID: ACCESS-2
+TITLE: ssh
+STATEMENT: >>>
+``ssh root@<router-ip>`` works without a password from the Mac (key ``~/.ssh/id_ed25519``) and
+from the phone with the key ``~/.ssh/orangepi_phone_ed25519`` (import the private key into the
+phone's ssh client). Over the tailnet: ``ssh root@orangepi-lte`` (Tailscale SSH is enabled, no
+key needed from tailnet devices).
+<<<
+
+[REQUIREMENT]
+UID: ACCESS-3
+TITLE: Web terminals
+STATEMENT: >>>
+``http://<router-ip>:7681/`` opens simei directly in the browser (also reachable as
+LuCI > Modem > SIM / IMEI (TUI)). ``http://<router-ip>:7682/`` opens a root shell in the browser.
+Both are reachable from the LAN and the tailnet only.
+<<<
+
+[REQUIREMENT]
+UID: ACCESS-4
+TITLE: Raw AT commands from another computer
+STATEMENT: >>>
+The modem's AT port is exposed on TCP port 5000 by the ``atbridge`` service:
+``socat - TCP:<router-ip>:5000`` then type ``AT+GSN`` (Enter). One client at a time.
+<<<
+
+[REQUIREMENT]
+UID: ACCESS-5
+TITLE: Serial console
+STATEMENT: >>>
+With the USB serial adapter connected to the Mac: ``tools/serial.sh console`` (exit with Ctrl-]),
+or ``tools/serial.sh run "ip addr"`` for one command. picocom must be closed first.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: simei: concepts
+
+[TEXT]
+STATEMENT: >>>
+simei keeps a **profile** for every SIM you own. A profile is identified by the SIM's ICCID and
+holds a name, the IMEI to use with that SIM, and optionally an APN. Profiles live in
+``/etc/config/simei``.
+
+The modem carries an eUICC, so "inserting another SIM" means **enabling another eSIM profile**.
+simei talks to the eUICC through ``lpac`` and to the modem through the AT bridge.
+
+Two operations do the real work:
+
+- ``apply`` looks at the SIM the modem currently sees, finds its profile, and if the profile's
+  IMEI differs from the modem's IMEI it writes the IMEI (``AT+EGMR=1,7``), restarts the modem
+  (``AT+CFUN=1,1``) and verifies the result.
+- ``switch`` enables an eSIM profile, restarts the modem and then runs ``apply`` for it.
+
+Reassigning an IMEI between two SIMs is therefore: ``move`` (or ``swap``) the IMEI between the
+two profiles, then ``switch`` to (or ``apply`` on) the SIM that should carry it now.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Using the TUI
+
+[REQUIREMENT]
+UID: TUI-1
+TITLE: Starting the TUI
+STATEMENT: >>>
+Run ``simei`` over ssh, on the serial console, or open ``http://<router-ip>:7681/``. The main
+menu offers: Status, Live dashboard, SIM profiles, Register the inserted SIM, Reassign IMEI,
+Apply, eSIM profiles, AT command, Restart, Exit. Menus are numbered; type the number or the
+name and press Enter (on a dumb console), or use the arrow keys (whiptail).
+<<<
+
+[REQUIREMENT]
+UID: TUI-2
+TITLE: Status
+STATEMENT: >>>
+Shows the modem IMEI (flagged when blank or invalid), SIM ICCID and IMSI, SIM state, signal,
+operator and access technology, registration state, and the matched profile with whether its
+IMEI matches the modem.
+<<<
+
+[REQUIREMENT]
+UID: TUI-3
+TITLE: Live dashboard
+STATEMENT: >>>
+Refreshes every second: download and upload rate of ``wwan0`` and session totals (read from the
+kernel counters, no modem round trips), LTE signal (RSSI, RSRP, RSRQ, SNR, from QMI every 3 s),
+IMEI, ICCID, operator. Leave with Enter (or any key where the terminal supports raw mode).
+<<<
+
+[REQUIREMENT]
+UID: TUI-4
+TITLE: eSIM profiles menu
+STATEMENT: >>>
+Lists every profile on the eUICC with its state, name/nickname and the IMEI assigned to it.
+Selecting a profile offers: **Switch** (enable it, restart the modem, write its IMEI),
+Enable, Disable, **Assign / change the IMEI for this SIM**, Set nickname, Delete. The menu also
+offers **Download a new profile** (activation code ``LPA:1$<smdp>$<matching-id>`` and, if the
+operator gave one, a confirmation code) and eUICC info (EID, free memory).
+<<<
+
+[REQUIREMENT]
+UID: TUI-5
+TITLE: Reassign IMEI
+STATEMENT: >>>
+Choose Move (source loses the IMEI, target receives it) or Swap, then the two profiles. If the
+SIM currently active is affected, simei offers to write the IMEI to the modem immediately.
+<<<
+
+[REQUIREMENT]
+UID: TUI-6
+TITLE: Apply
+STATEMENT: >>>
+Shows the planned change (``IMEI change: <old> -> <new>``) and asks for confirmation before
+writing. The modem restarts; the screen reports ``verified: modem IMEI is now ...`` when done.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Using the command line
+
+[REQUIREMENT]
+UID: CLI-1
+TITLE: Command reference
+STATEMENT: >>>
+.. code-block:: text
+
+    simei status [--raw]           modem + SIM status, matched profile
+    simei live [--once]            live bandwidth / signal dashboard
+    simei list                     SIM profiles
+    simei register [name]          profile for the SIM the modem sees now
+    simei add <name> <iccid> [imei] [apn]
+    simei set <profile> name|imei|apn|iccid <value>
+    simei delete <profile>
+    simei move <from> <to>         hand the IMEI to another profile
+    simei swap <a> <b>             exchange the IMEIs
+    simei apply [--yes] [--dry-run]
+    simei switch <iccid|profile> [--yes]
+    simei esim [list] | info | enable <iccid> | disable <iccid>
+    simei esim delete <iccid> [--yes] | nickname <iccid> <name>
+    simei esim download 'LPA:1$smdp$id' [confirmation-code]
+    simei at "AT+..."              raw AT command
+    simei luhn <14|15 digits>      IMEI check digit
+    simei restart modem|wwan|bridge
+<<<
+
+[REQUIREMENT]
+UID: CLI-2
+TITLE: First SIM (the DENT eSIM already on the eUICC)
+STATEMENT: >>>
+.. code-block:: text
+
+    simei register DENT                 # creates sim1 for ICCID 8948010010087197546
+    simei set sim1 imei 35xxxxxxxxxxxxx  # 14 digits: the check digit is appended for you
+    simei apply                          # writes it, restarts the modem, verifies
+
+The modem shipped with IMEI 000000000000000 (blank); simei refuses to store or back up that
+value, so an IMEI has to be assigned once before the first ``apply``.
+<<<
+
+[REQUIREMENT]
+UID: CLI-3
+TITLE: Adding a second eSIM and moving between them
+STATEMENT: >>>
+.. code-block:: text
+
+    simei esim download 'LPA:1$smdp.example.com$ABCD-1234'   # from the operator's QR code
+    simei esim list                                          # note the new ICCID (disabled)
+    simei add "Work" <iccid> 35yyyyyyyyyyyyy                 # its own IMEI
+    simei switch <iccid>                                     # enable + restart + write IMEI
+    simei switch sim1                                        # back to DENT
+
+To give the second SIM the IMEI of the first: ``simei move sim1 sim2`` then ``simei switch sim2``.
+<<<
+
+[REQUIREMENT]
+UID: CLI-4
+TITLE: Exit codes and logs
+STATEMENT: >>>
+``apply`` / ``switch``: 0 done or nothing to do; 1 cancelled or usage error; 2 the IMEI fails the
+15-digit Luhn check; 3 no SIM, no profile, or no IMEI assigned; 4 the modem refused the write or did
+not come back; 5 the AT bridge or lpac is unreachable. Every write is logged to the system log
+(``logread | grep simei``). The first valid IMEI seen is saved to ``/etc/simei.factory-imei``.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Automatic mode
+
+[REQUIREMENT]
+UID: AUTO-1
+TITLE: auto_apply
+STATEMENT: >>>
+``uci set simei.global.auto_apply=1; uci commit simei`` makes the hotplug script
+``/etc/hotplug.d/tty/90-simei`` run ``simei apply --yes`` about 20 s after the modem's AT port
+appears (boot, modem restart). The profile of whatever SIM is active then gets its IMEI written
+without asking. Default is off.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Other modem tools on the router
+
+[TEXT]
+STATEMENT: >>>
+- LuCI > Modem > **3ginfo-lite**: signal, band, cell, operator, connection details.
+- LuCI > Modem > **SMS tool**: read and send SMS, USSD, send AT commands from the browser.
+- LuCI > Network > Interfaces > **wwan**: the LTE connection (QMI, APN ``internet``); change the
+  APN there if the operator needs another one.
+- ``uqmi -d /dev/cdc-wdm0 --get-signal-info`` and ``--get-serving-system`` from a shell.
+- Band locking: ``simei at 'AT+QCFG="band",0,0x80000,0'`` style commands (see the Quectel
+  EG25-G AT manual); ``luci-app-modemband`` could not be installed on 25.12.1.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Maintenance from the Mac
+
+[REQUIREMENT]
+UID: MAINT-1
+TITLE: Updating simei on the router
+STATEMENT: >>>
+.. code-block:: text
+
+    sh simei/tests/run.sh          # local tests (socat, jq required)
+    tools/rt push simei /          # copy the tree to the router
+    tools/rt 'sh /usr/lib/simei/tests/run.sh'   # tests on the router
+
+Everything is versioned in the private repository ``github.com/jftochka/owrt-orangepi-lte``.
+<<<
+
+[REQUIREMENT]
+UID: MAINT-2
+TITLE: Re-creating the router from scratch
+STATEMENT: >>>
+Flash the official OpenWrt 25.12.1 image for xunlong_orangepi-zero3, connect serial and Ethernet,
+then run in order: ``tools/01-bootstrap-net.sh``, ``tools/rt - < tools/02-install.sh``,
+``tools/rt push simei /``, ``tools/rt - < tools/03-configure.sh``, ``tools/rt - < tools/04-tailscale.sh``
+(open the printed login URL once). If the modem is in ECM mode
+(``AT+QCFG="usbnet"`` returns 1) switch it to QMI with ``AT+QCFG="usbnet",0`` and ``AT+CFUN=1,1``.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Troubleshooting
+
+[TEXT]
+STATEMENT: >>>
+- **simei: cannot reach the AT bridge**: ``/etc/init.d/atbridge restart``; check ``ls /dev/ttyUSB*``.
+- **Registration: searching / No Service**: ``simei at 'AT+QENG="servingcell"'`` shows whether a
+  cell is seen; a blank IMEI can be rejected by the network - assign one and ``simei apply``.
+- **lpac: euicc_init**: another program holds ``/dev/ttyUSB3`` or echo is on; ``simei esim info``
+  sends ``ATE0`` first. Only the ``at`` backend works with lpac 2.3.0 on this build.
+- **Web TUI page empty in LuCI**: LuCI was opened over https; use ``http://`` or the direct link
+  shown on the page.
+- **Board unreachable after a DHCP change**: look up the new address (home router, or
+  ``tools/serial.sh run "ip -4 addr show br-lan"``) and update ``tools/router.env``.
+<<<
+
+[[/SECTION]]

@@ -5,3 +5,4 @@ tools/.bootstrap.out
 *.new
 *.tmp.*
 .DS_Store
+docs/export/

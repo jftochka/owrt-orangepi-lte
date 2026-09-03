@@ -77,3 +77,5 @@
 [2026-09-03 11:00] mac: PATH=~/.venvs/strictdoc/bin strictdoc export --formats=html2pdf docs
 [2026-09-03 11:05] mac: docs PDF copied to docs/; git commit + push
 [2026-09-03 11:08] mac: final commit of claudehistoryfile.txt; git push
+[2026-09-03 11:20] mac: git log --format for Linear duplication
+[2026-09-03 11:30] mac: Linear: project + SFT-132..SFT-143 + user guide document created via MCP

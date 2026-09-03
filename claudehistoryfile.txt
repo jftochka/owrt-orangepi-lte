@@ -63,3 +63,9 @@
 [2026-09-03 10:05] mac: tools/rt push simei /; router tests; simei register DENT; simei status
 [2026-09-03 10:05] mac: git commit + push (blank IMEI handling, scripts sync)
 [2026-09-03 10:12] mac: tools/rt: modem registration check (CREG/CEREG/COPS/QNWINFO/CSQ), wwan log
+[2026-09-03 10:12] mac: README.md written; git commit + push
+[2026-09-03 10:18] mac: tools/rt: modem recovery (AT+COPS=0, AT+CFUN=1,1), re-check registration; ttyd ports
+[2026-09-03 10:18] mac: python3 -m pip install strictdoc (background)
+[2026-09-03 10:24] mac: tools/rt: ttyd bind to all interfaces (was stuck on old DHCP IP), restart; modem RF diagnostics + CFUN 0/1 cycle
+[2026-09-03 10:30] mac: tools/rt: AT+QTEMP, network scan AT+COPS=? (long), servingcell; drop stale ttyd writable options
+[2026-09-03 10:30] mac: /usr/local/bin/python3.13 -m venv ~/.venvs/strictdoc; pip install strictdoc (background)

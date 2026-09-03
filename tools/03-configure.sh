@@ -36,17 +36,16 @@ echo "== uhttpd: keep plain http reachable (the web TUI iframe needs the same sc
 uci set uhttpd.main.redirect_https='0'
 uci commit uhttpd
 
-echo "== ttyd: web TUI (7681 -> simei) and web shell (7682)"
+echo "== ttyd: web TUI (7681 -> simei) and web shell (7682); bound to all interfaces (a DHCP address change would
+strand an interface-bound instance), the firewall keeps them LAN-only"
 uci -q delete ttyd.simei || true
 uci set ttyd.simei=ttyd
-uci set ttyd.simei.interface='@lan'
 uci set ttyd.simei.port='7681'
 uci set ttyd.simei.command='/usr/sbin/simei'
 uci set ttyd.simei.ssl='0'
 uci set ttyd.simei.writable='1'
 uci -q delete ttyd.shell || true
 uci set ttyd.shell=ttyd
-uci set ttyd.shell.interface='@lan'
 uci set ttyd.shell.port='7682'
 uci set ttyd.shell.command='/bin/login -f root'
 uci set ttyd.shell.ssl='0'

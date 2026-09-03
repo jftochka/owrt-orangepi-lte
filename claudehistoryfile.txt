@@ -52,3 +52,8 @@
 [2026-09-03 09:32] mac: simei live read -t fallback; eSIM tests appended; run local tests (sh + dash)
 [2026-09-03 09:40] mac: tools/serial.sh run: br-lan address/route after ifup lan (ssh timed out)
 [2026-09-03 09:40] mac: fixed eSIM test (Play is sim3); rerun local tests
+[2026-09-03 09:40] mac: git init; .gitignore; initial commit
+[2026-09-03 09:44] mac: serial.sh LC_ALL=C for tr/awk; serial query of br-lan state
+[2026-09-03 09:44] mac: gh repo create jftochka/owrt-orangepi-lte --private --source=. --push
+[2026-09-03 09:50] mac: router.env -> 192.168.1.105; tools/rt: apk add coreutils-timeout coreutils-sleep; lan hostname; lpac at/uqmi backend tests
+[2026-09-03 09:50] mac: tools/rt push simei /; run tests on router

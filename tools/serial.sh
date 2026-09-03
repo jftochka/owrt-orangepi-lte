@@ -46,8 +46,8 @@ run_cmd() {
 	) > "$fifo" &
 	wpid=$!
 	"$SOCAT" -T "$wait" - "$PORT,$TTYOPTS" < "$fifo" 2>/dev/null \
-		| tr -d '\r\000' \
-		| awk -v s="S$id" -v e="E$id" '
+		| LC_ALL=C tr -d '\r\000' \
+		| LC_ALL=C awk -v s="S$id" -v e="E$id" '
 			!on { if ($0 == s) on = 1; next }
 			$0 == e { exit }
 			{ print }'

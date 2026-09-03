@@ -60,9 +60,10 @@ luhn_digit() {  # 14 digits -> check digit
 	}'
 }
 is_digits() { case $1 in ''|*[!0-9]*) return 1 ;; esac; return 0; }
-imei_valid() {  # 15 digits with a correct Luhn check digit
+imei_valid() {  # 15 digits with a correct Luhn check digit, and not the blank all-zero value
 	is_digits "$1" || return 1
 	[ ${#1} -eq 15 ] || return 1
+	[ "$1" != 000000000000000 ] || return 1
 	[ "$(luhn_digit "${1%?}")" = "${1#??????????????}" ]
 }
 
@@ -247,7 +248,7 @@ status_lines() {  # after modem_read + match_profile; pretty text
 		ptxt="$P_ID \"$P_NAME\"  IMEI ${P_IMEI:--}"
 		case $P_MATCH in yes) ptxt="$ptxt  [modem IMEI matches]" ;; no) ptxt="$ptxt  [DIFFERS from modem - run apply]" ;; esac
 	fi
-	printf 'IMEI        : %s\n' "${M_IMEI:--}"
+	printf 'IMEI        : %s%s\n' "${M_IMEI:--}" "$( [ -n "$M_IMEI" ] && ! imei_valid "$M_IMEI" && printf '  (blank/invalid IMEI)' )"
 	printf 'SIM ICCID   : %s\n' "${M_ICCID:--}"
 	printf 'IMSI        : %s\n' "${M_IMSI:--}"
 	printf 'SIM status  : %s\n' "${M_CPIN:--}"
@@ -304,11 +305,12 @@ cmd_register() {  # [name] [--update]
 		profile_set "$id" iccid "$M_ICCID"
 	fi
 	[ -n "$name" ] && profile_set "$id" name "$name"
-	profile_set "$id" imei "$M_IMEI"
+	if imei_valid "$M_IMEI"; then profile_set "$id" imei "$M_IMEI"
+	else echo "note: modem IMEI $M_IMEI is blank/invalid, not stored; assign one with: simei set $id imei <imei>" >&2; fi
 	[ -n "$M_IMSI" ] && profile_set "$id" imsi "$M_IMSI"
 	profile_commit
 	log "registered $id iccid=$M_ICCID imei=$M_IMEI"
-	echo "registered $id: $(profile_get "$id" name)  ICCID $M_ICCID  IMEI $M_IMEI"
+	echo "registered $id: $(profile_get "$id" name)  ICCID $M_ICCID  IMEI $(profile_get "$id" imei | sed 's/^$/-/')"
 }
 
 cmd_add() {  # name iccid [imei] [apn]

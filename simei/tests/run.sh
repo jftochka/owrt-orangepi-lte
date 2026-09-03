@@ -184,5 +184,19 @@ if run esim download 'not-a-code' >/dev/null 2>&1; then bad "esim download: bad 
 if run switch 8948099999999999999 --yes >/dev/null 2>&1; then bad "switch: unknown ICCID accepted"; else ok "switch: unknown ICCID rejected"; fi
 out=$(printf 'esim\nback\nexit\n' | run); expect "tui: esim menu lists profiles" '8948010010087197546' "$out"
 
+# 11. blank (all-zero) IMEI: Luhn-valid but must be rejected and never stored
+if run luhn 000000000000000 >/dev/null 2>&1; then bad "luhn: all-zero IMEI accepted"; else ok "luhn: all-zero IMEI rejected"; fi
+echo 000000000000000 > "$STATE/imei"; echo 8948030000000000003 > "$STATE/iccid"; rm -f "$T/factory"
+out=$(run status); expect "status: blank IMEI flagged" 'IMEI *: *000000000000000 .*blank' "$out"
+out=$(run register "Blank" 2>&1); expect "register: blank IMEI not stored" 'not stored' "$out"
+p=$(uci -c "$SIMEI_UCI_DIR" -q show simei | sed -n "s/^simei\.\([^.]*\)\.iccid='8948030000000000003'$/\1/p")
+expect "register: profile created without IMEI" '^imei=$' "imei=$(uci -c "$SIMEI_UCI_DIR" -q get "simei.$p.imei")"
+Z=$(run luhn 35209900176148)
+run set "$p" imei "$Z" >/dev/null; : > "$STATE/log"
+out=$(run apply --yes); rc=$?
+if [ $rc -eq 0 ]; then ok "apply: from blank IMEI to a real one"; else bad "apply: from blank IMEI rc=$rc" "$out"; fi
+if [ -f "$T/factory" ]; then bad "apply: all-zero IMEI saved as factory backup"; else ok "apply: no factory backup of a blank IMEI"; fi
+expect "apply: modem now has the assigned IMEI" "^$Z\$" "$(cat "$STATE/imei")"
+
 echo "passed: $pass  failed: $fail"
 [ $fail -eq 0 ]

@@ -18,6 +18,9 @@ apk add sms-tool socat whiptail ttyd luci-app-ttyd
 echo "== tailscale"
 apk add tailscale kmod-tun luci-app-tailscale-community
 
+echo "== eSIM (lpac), jq, GNU timeout/sleep (BusyBox lacks timeout and fractional sleep)"
+apk add lpac jq coreutils-timeout coreutils-sleep
+
 echo "== 4IceG modem apps (unsigned, from GitHub releases)"
 mkdir -p /tmp/4iceg && cd /tmp/4iceg
 for u in \

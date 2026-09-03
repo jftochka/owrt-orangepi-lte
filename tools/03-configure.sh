@@ -13,8 +13,9 @@ uci set network.wwan.device='/dev/cdc-wdm0'
 uci set network.wwan.apn="$APN"
 uci set network.wwan.auth='none'
 uci set network.wwan.pdptype='ipv4'
-uci set network.wwan.metric='10'
-uci set network.lan.metric='20'
+uci set network.wwan.metric='20'   # home LAN preferred while the board is a DHCP client there
+uci set network.lan.metric='10'
+uci set network.lan.hostname='orangepi-lte'
 uci commit network
 
 echo "== firewall: wwan in zone wan, tailscale in zone lan"
@@ -93,3 +94,8 @@ echo "== state"
 ls -la /dev/ttyUSB* /dev/cdc-wdm* 2>/dev/null || true
 netstat -ltn 2>/dev/null | grep -E ':(80|443|5000|7681|7682) ' || true
 echo "== done"
+
+echo "== lpac: AT backend on the modem's second AT port (the uqmi backend of lpac 2.3.0 fails on this build)"
+uci set lpac.global.apdu_backend='at'
+uci set lpac.at.device='/dev/ttyUSB3'
+uci commit lpac

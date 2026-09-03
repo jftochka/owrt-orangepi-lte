@@ -57,3 +57,7 @@
 [2026-09-03 09:44] mac: gh repo create jftochka/owrt-orangepi-lte --private --source=. --push
 [2026-09-03 09:50] mac: router.env -> 192.168.1.105; tools/rt: apk add coreutils-timeout coreutils-sleep; lan hostname; lpac at/uqmi backend tests
 [2026-09-03 09:50] mac: tools/rt push simei /; run tests on router
+[2026-09-03 09:50] mac: git commit + push (serial.sh locale, test fix)
+[2026-09-03 09:58] mac: tools/rt: simei esim info/list, status --raw on the real eUICC; clear luci cache
+[2026-09-03 09:58] mac: simei: all-zero IMEI invalid, register skips blank IMEI, status flags it; tests 11; sync 02/03 scripts; local tests
+[2026-09-03 10:05] mac: tools/rt push simei /; router tests; simei register DENT; simei status

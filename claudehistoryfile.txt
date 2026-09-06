@@ -835,3 +835,29 @@ git add claudehistoryfile.txt; git commit (claudehistoryfile: 2026-09-06 session
 tools/rt 'simei at "AT+CPIN?"; simei at "AT+QSIMSTAT?"; simei at "AT+CEREG?"; ifstatus wwan'   # SIM re-check while waiting for the reseat
 # wrote docs/upstream-lpac-uqmi-env.md: draft of the openwrt/packages report for SFT-142 (not filed)
 git add docs/upstream-lpac-uqmi-env.md claudehistoryfile.txt; git commit (docs: draft upstream report for the lpac uqmi driver environment); git push
+# user reseated the eUICC
+tools/rt 'simei at "AT+CPIN?"; [CME] simei at "AT+CFUN=1,1"; sleep 35; AT+QSIMSTAT? AT+QCCID AT+CIMI AT+CEREG? AT+COPS? AT+CSQ AT+QENG="servingcell"; simei status; simei esim info; simei esim list; LPAC_APDU=uqmi LPAC_QMI_DEV=/dev/cdc-wdm0 /usr/lib/lpac chip info; ifstatus wwan; ip -4 addr show wwan0'
+# still CME 10 after reseat + AT+CFUN=1,1; modem in LIMSRV WCDMA; trying the second SIM interface
+tools/rt 'simei at "AT+QSIMVOL?"; simei at "AT+QSIMDET?"; simei at "AT+QDSIM=1"; simei at "AT+CFUN=1,1"; sleep 35; AT+QDSIM? AT+CPIN? AT+QSIMSTAT?; [no SIM] simei at "AT+QDSIM=0"; simei at "AT+CFUN=1,1"; sleep 35; AT+QDSIM? AT+CPIN?'
+# no SIM on either interface (QDSIM 0/1), QSIMVOL auto; Linear SFT-140 comment: fault between card and slot; isolation test with a known-good SIM requested
+# eUICC re-inserted by the user
+tools/rt 'simei at "AT+CFUN=1,1"; sleep 35; AT+CPIN? AT+QSIMSTAT?; [if SIM] AT+QCCID AT+CIMI AT+CEREG? AT+COPS? AT+CSQ; simei status; simei esim info; simei esim list; LPAC_APDU=uqmi LPAC_QMI_DEV=/dev/cdc-wdm0 /usr/lib/lpac chip info; ifstatus wwan'
+# re-insert did not help (CPIN CME 10 after restart); asking for a known-good SIM to isolate card vs slot
+# known-good SIM inserted by the user
+tools/rt 'simei at "AT+CFUN=1,1"; sleep 35; AT+CPIN? AT+QSIMSTAT? AT+QCCID AT+CIMI AT+CEREG? AT+COPS?'
+# known-good SIM not detected either -> slot/modem SIM path at fault, not the eUICC; Linear SFT-140 + memory updated; asking for a modem module reseat
+# holder checked by the user (EG25-G is a micro-USB board, holder on the board itself), 9esim card back in
+tools/rt 'simei at "AT+CFUN=1,1"; sleep 35; AT+CPIN? AT+QSIMSTAT?; [if SIM] AT+QCCID AT+CIMI AT+CEREG? AT+COPS?; simei status; simei esim info; simei esim list; LPAC_APDU=uqmi LPAC_QMI_DEV=/dev/cdc-wdm0 /usr/lib/lpac chip info'
+# holder checked, still CME 10; NV corruption theory (usbnet had flipped): query AT+QPRTPARA=4, CFUN 0/1 cycle, QCFG=? sim entries
+tools/rt 'simei at "AT+QPRTPARA=4"; simei at "AT+QCFG=\"usbnet\""; simei at "AT+CFUN=0"; simei at "AT+CFUN=1"; sleep 12; AT+CPIN? AT+QSIMSTAT?; simei at "AT+QCFG=?" | grep -i sim'
+# QPRTPARA: 1 backup, 0 restores; reading QCFG sim/onchip, sim/clk_freq, sim/recovery, siminvalirecovery, cdmaruim
+tools/rt 'for k in sim/onchip sim/clk_freq sim/recovery siminvalirecovery cdmaruim; do simei at "AT+QCFG=\"$k\""; done'
+# sim/onchip 0, clk_freq 0, recovery 3,0,0 -> settings normal; proposing AT+QPRTPARA=3 (NV restore) to the user; Linear SFT-140 updated
+# user approved the NV restore
+tools/rt 'simei at "AT+QPRTPARA=3"; simei at "AT+CFUN=1,1"; sleep 70; AT+QPRTPARA=4 AT+QCFG="usbnet"; ls /dev/cdc-wdm*; logread | grep simei; AT+CPIN? AT+QSIMSTAT? AT+QCCID AT+GSN'
+# NV restore: restore count 1, usbnet stays 0, factory IMEI 867698046226489 is back (was blank); SIM still CME 10
+tools/rt 'for v in 2 1; do simei at "AT+QSIMVOL=$v"; simei at "AT+CFUN=1,1"; sleep 35; AT+CPIN?; done; simei at "AT+QSIMVOL=0"; simei at "AT+CFUN=1,1"; sleep 35; AT+QSIMVOL? AT+CPIN? AT+QCFG="usbnet"'
+sh simei/usr/sbin/simei luhn 867698046226489
+# Linear SFT-140 comment (IMEI restored, SIM path defective); memory updated
+# QSIMVOL 3V/1.8V: still CME 10; reverted to auto. Conclusion: EG25-G USB board SIM path defective. Linear SFT-140 closed out with findings (issue stays open, blocked on hardware)
+git add claudehistoryfile.txt; git commit (claudehistoryfile: SIM holder diagnosis, NV restore); git push

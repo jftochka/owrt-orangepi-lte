@@ -204,5 +204,40 @@ if [ $rc -eq 0 ]; then ok "apply: from blank IMEI to a real one"; else bad "appl
 if [ -f "$T/factory" ]; then bad "apply: all-zero IMEI saved as factory backup"; else ok "apply: no factory backup of a blank IMEI"; fi
 expect "apply: modem now has the assigned IMEI" "^$Z\$" "$(cat "$STATE/imei")"
 
+# 12. USB mode guard (SFT-239): the EG25-G can come back in ECM mode after a power loss
+echo 1 > "$STATE/usbnet"; : > "$STATE/log"
+out=$(run usbmode); rc=$?
+expect "usbmode: reports ECM" '^usbnet=1 \(ecm\)$' "$out"
+if [ $rc -eq 1 ]; then ok "usbmode: exit 1 when not QMI"; else bad "usbmode: exit $rc when not QMI" "$out"; fi
+reject "usbmode: query leaves the mode alone" 'QCFG="usbnet",0' "$(cat "$STATE/log")"
+out=$(run usbmode --fix); rc=$?
+if [ $rc -eq 0 ]; then ok "usbmode --fix: exit 0"; else bad "usbmode --fix: exit $rc" "$out"; fi
+expect "usbmode --fix: usbnet set to 0" '^0$' "$(cat "$STATE/usbnet")"
+expect "usbmode --fix: QCFG write sent" '^AT\+QCFG="usbnet",0$' "$(cat "$STATE/log")"
+expect "usbmode --fix: modem restarted" '^AT\+CFUN=1,1$' "$(cat "$STATE/log")"
+expect "usbmode --fix: reports the switch" 'switched to QMI' "$out"
+: > "$STATE/log"
+out=$(run usbmode --fix); rc=$?
+expect "usbmode --fix: no-op when already QMI" 'already QMI' "$out"
+reject "usbmode --fix: no restart when already QMI" 'CFUN=1,1' "$(cat "$STATE/log")"
+out=$(run usbmode); rc=$?
+expect "usbmode: reports QMI" '^usbnet=0 \(qmi\)$' "$out"
+if [ $rc -eq 0 ]; then ok "usbmode: exit 0 when QMI"; else bad "usbmode: exit $rc when QMI" "$out"; fi
+
+# 12b. hotplug: the guard runs when the AT port appears, before the optional auto-apply
+printf '#!/bin/sh\nexec %s "%s" "$@"\n' "$SH" "$SIMEI" > "$T/bin/simei-bin"; chmod +x "$T/bin/simei-bin"
+echo 1 > "$STATE/usbnet"; : > "$STATE/log"
+ACTION=add DEVNAME=ttyUSB2 SIMEI_BIN="$T/bin/simei-bin" SIMEI_HOTPLUG_DELAY=0 sh "$HOTPLUG"; sleep 3
+expect "hotplug: switches ECM to QMI" '^0$' "$(cat "$STATE/usbnet")"
+expect "hotplug: restarts the modem" '^AT\+CFUN=1,1$' "$(cat "$STATE/log")"
+: > "$STATE/log"
+ACTION=add DEVNAME=ttyUSB2 SIMEI_BIN="$T/bin/simei-bin" SIMEI_HOTPLUG_DELAY=0 sh "$HOTPLUG"; sleep 3
+reject "hotplug: no restart when already QMI" 'CFUN=1,1' "$(cat "$STATE/log")"
+: > "$STATE/log"
+ACTION=add DEVNAME=ttyUSB9 SIMEI_BIN="$T/bin/simei-bin" SIMEI_HOTPLUG_DELAY=0 sh "$HOTPLUG"; sleep 1
+reject "hotplug: other ttys ignored" 'AT' "$(cat "$STATE/log")"
+ACTION=remove DEVNAME=ttyUSB2 SIMEI_BIN="$T/bin/simei-bin" SIMEI_HOTPLUG_DELAY=0 sh "$HOTPLUG"; sleep 1
+reject "hotplug: remove events ignored" 'AT' "$(cat "$STATE/log")"
+
 echo "passed: $pass  failed: $fail"
 [ $fail -eq 0 ]

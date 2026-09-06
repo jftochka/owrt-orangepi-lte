@@ -46,6 +46,11 @@ handle() {
 			info "+CEREG: 0,1"; final OK ;;
 		"AT+CFUN=1,1")
 			n=$(getf reboots 0); printf '%s\n' "$((n + 1))" > "$S/reboots"; final OK ;;
+		"AT+QCFG=\"USBNET\"")                        # USB mode: 0 QMI, 1 ECM, 2 MBIM, 3 RNDIS
+			info "+QCFG: \"usbnet\",$(getf usbnet 0)"; final OK ;;
+		"AT+QCFG=\"USBNET\","*)
+			v=${c#AT+QCFG=\"USBNET\",}
+			case $v in 0|1|2|3) printf '%s\n' "$v" > "$S/usbnet"; final OK ;; *) final ERROR ;; esac ;;
 		*)
 			final ERROR ;;
 	esac

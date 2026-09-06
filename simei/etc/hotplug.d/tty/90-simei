@@ -1,13 +1,26 @@
 #!/bin/sh
-# When the modem's AT port (re)appears, apply the inserted SIM's profile IMEI
-# if simei.global.auto_apply is enabled.
+# When the modem's AT port (re)appears:
+#  1. make sure the EG25-G is in QMI USB mode. After a power loss it came back in ECM mode,
+#     which leaves no cdc-wdm0 / wwan0 (SFT-239): `simei usbmode --fix` sends AT+QCFG="usbnet",0
+#     and restarts the modem once; the port re-appears and this script runs again with nothing to do.
+#  2. apply the inserted SIM's profile IMEI if simei.global.auto_apply is enabled.
+# Test overrides: SIMEI_BIN (simei to run), SIMEI_HOTPLUG_DELAY (seconds), SIMEI_UCI_DIR.
 
 [ "$ACTION" = add ] || exit 0
-tty=$(uci -q get simei.global.tty); tty=${tty:-/dev/ttyUSB2}
+uci_get() { if [ -n "${SIMEI_UCI_DIR:-}" ]; then uci -c "$SIMEI_UCI_DIR" -q get "$1"; else uci -q get "$1"; fi; }
+tty=$(uci_get simei.global.tty); tty=${tty:-/dev/ttyUSB2}
 [ "/dev/$DEVNAME" = "$tty" ] || exit 0
-[ "$(uci -q get simei.global.auto_apply)" = 1 ] || exit 0
+SIMEI=${SIMEI_BIN:-/usr/sbin/simei}
+delay=${SIMEI_HOTPLUG_DELAY:-20}   # let the modem finish SIM initialisation
 
 (
-	sleep 20   # let the modem finish SIM initialisation
-	/usr/sbin/simei apply --yes 2>&1 | logger -t simei
+	sleep "$delay"
+	mode=$("$SIMEI" usbmode 2>&1); rc=$?
+	case $rc in
+		0) ;;
+		1) "$SIMEI" usbmode --fix 2>&1 | logger -t simei; exit 0 ;;   # modem restarts, next add event continues
+		*) logger -t simei "usbmode check failed: $mode"; exit 0 ;;
+	esac
+	[ "$(uci_get simei.global.auto_apply)" = 1 ] || exit 0
+	"$SIMEI" apply --yes 2>&1 | logger -t simei
 ) &

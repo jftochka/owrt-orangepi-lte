@@ -460,6 +460,32 @@ cmd_restart() {
 	esac
 }
 
+usbmode_text() {  # AT+QCFG="usbnet" value -> name
+	case $1 in 0) echo qmi ;; 1) echo ecm ;; 2) echo mbim ;; 3) echo rndis ;; *) echo unknown ;; esac
+}
+
+cmd_usbmode() {  # [--fix]  QMI (usbnet 0) is required; the EG25-G came back in ECM mode after a power loss
+	local fix=0 mode r
+	case ${1:-} in --fix) fix=1 ;; '') ;; *) die "usage: simei usbmode [--fix]" 64 ;; esac
+	at_open || die "cannot reach the AT bridge at $AT_HOST:$AT_PORT (is atbridge running?)" 5
+	mode=$(at_cmd 'AT+QCFG="usbnet"' | sed -n 's/^+QCFG: *"usbnet", *\([0-9]*\).*/\1/p' | head -n1)
+	if [ -z "$mode" ]; then at_close; die "modem did not answer AT+QCFG=\"usbnet\"" 4; fi
+	if [ $fix -eq 0 ]; then
+		at_close
+		echo "usbnet=$mode ($(usbmode_text "$mode"))"
+		[ "$mode" = 0 ]
+		return
+	fi
+	if [ "$mode" = 0 ]; then at_close; echo "already QMI (usbnet=0), nothing to do"; return 0; fi
+	r=$(at_cmd 'AT+QCFG="usbnet",0' 10)
+	if ! printf '%s\n' "$r" | grep -qx OK; then at_close; die "modem refused AT+QCFG=\"usbnet\",0" 4; fi
+	r=$(at_cmd 'AT+CFUN=1,1' 10)
+	at_close
+	printf '%s\n' "$r" | grep -qx OK || die "usbnet set to 0 but the modem did not accept AT+CFUN=1,1" 4
+	log "USB mode was $mode ($(usbmode_text "$mode")); switched to QMI, modem restarting"
+	echo "switched to QMI (usbnet was $mode, $(usbmode_text "$mode")), modem restarting"
+}
+
 # ---- live dashboard --------------------------------------------------------------
 live_frame() {  # rx_bps tx_bps rx_total tx_total signal_json
 	local sig=$5 type rssi rsrp rsrq snr
@@ -890,6 +916,7 @@ simei $VERSION - SIM / IMEI manager (Quectel EG25-G, OpenWrt)
   simei at "<AT command>"        raw AT command via the bridge
   simei luhn <14|15 digits>      compute / verify the IMEI check digit
   simei restart modem|wwan|bridge
+  simei usbmode [--fix]          USB mode of the modem (usbnet 0 = QMI); --fix switches to QMI and restarts it
 EOF
 }
 
@@ -909,6 +936,7 @@ case ${1:-tui} in
 	at)       shift; cmd_at "$@" ;;
 	luhn)     shift; cmd_luhn "$@" ;;
 	restart)  shift; cmd_restart "$@" ;;
+	usbmode)  shift; cmd_usbmode "$@" ;;
 	tui)      tui_main ;;
 	version|--version) echo "simei $VERSION" ;;
 	help|-h|--help) usage ;;

@@ -54,6 +54,7 @@ simei esim download 'LPA:1$smdp$matching-id' [confirmation-code]
 simei at "AT+..."              raw AT command through the bridge
 simei luhn <14|15 digits>      compute or verify an IMEI check digit
 simei restart modem|wwan|bridge
+simei usbmode [--fix]          USB mode of the modem (usbnet 0 = QMI); --fix switches to QMI and restarts it
 ```
 
 Typical flows:
@@ -71,8 +72,10 @@ lpac unreachable. The original IMEI is saved once to `/etc/simei.factory-imei` (
 
 Configuration: `/etc/config/simei` (`global`: `at_host`, `at_port`, `tty`, `qmi_dev`,
 `wwan_iface`, `wwan_dev`, `esim_backend` at|uqmi, `esim_tty`, `auto_apply`; one `profile`
-section per SIM). `auto_apply 1` makes `/etc/hotplug.d/tty/90-simei` run `simei apply --yes`
-whenever the modem's AT port re-appears.
+section per SIM). Whenever the modem's AT port re-appears, `/etc/hotplug.d/tty/90-simei` runs
+`simei usbmode` and, if the modem is not in QMI mode, `simei usbmode --fix` (the EG25-G came back
+in ECM mode after a power loss, leaving no `wwan0`); with `auto_apply 1` it then runs
+`simei apply --yes`.
 
 Modem facts used here: `AT+EGMR=0,7` / `AT+GSN` read the IMEI, `AT+EGMR=1,7,"<imei>"` writes
 it, `AT+CFUN=1,1` restarts the modem, `AT+QCCID` returns the ICCID with a trailing filler `F`

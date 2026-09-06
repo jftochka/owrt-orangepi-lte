@@ -180,6 +180,7 @@ STATEMENT: >>>
     simei at "AT+..."              raw AT command
     simei luhn <14|15 digits>      IMEI check digit
     simei restart modem|wwan|bridge
+    simei usbmode [--fix]          USB mode (usbnet 0 = QMI); --fix switches and restarts
 <<<
 
 [REQUIREMENT]
@@ -230,10 +231,13 @@ TITLE: Automatic mode
 UID: AUTO-1
 TITLE: auto_apply
 STATEMENT: >>>
-``uci set simei.global.auto_apply=1; uci commit simei`` makes the hotplug script
-``/etc/hotplug.d/tty/90-simei`` run ``simei apply --yes`` about 20 s after the modem's AT port
-appears (boot, modem restart). The profile of whatever SIM is active then gets its IMEI written
-without asking. Default is off.
+About 20 s after the modem's AT port appears (boot, modem restart) the hotplug script
+``/etc/hotplug.d/tty/90-simei`` runs ``simei usbmode``: if the EG25-G is not in QMI USB mode
+(``AT+QCFG="usbnet"`` other than 0, seen after a power loss, which leaves no ``wwan0``) it runs
+``simei usbmode --fix``, which sets QMI mode and restarts the modem once; the port re-appears and
+the script runs again. ``uci set simei.global.auto_apply=1; uci commit simei`` additionally makes
+it run ``simei apply --yes`` afterwards, so the profile of whatever SIM is active gets its IMEI
+written without asking. Default for auto_apply is off; the USB mode guard is always on.
 <<<
 
 [[/SECTION]]

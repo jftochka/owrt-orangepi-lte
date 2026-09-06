@@ -893,3 +893,65 @@ tools/rt 'cd /tmp/eg25-fw && wget -O EG25GGBR07A08M2G_30.007.30.007.tar.gz https
 # 30.007 verified: 18/18 manifest hashes match (targetfiles.zip = OTA artifact, not in the package); pre-flight snapshot; committing the doc correction
 tools/rt 'AT+QGMR; AT+GSN; AT+QCFG="usbnet"; AT+QPRTPARA=4; ls /dev/ttyUSB* /dev/cdc-wdm*; processes holding ttyUSB; /etc/init.d/atbridge status; ifstatus wwan'
 git add docs/eg25g-firmware-reset.md claudehistoryfile.txt; git commit (docs: branch list correction, 30.20x warning); git push
+# user: go, flash 30.007
+tools/rt '/etc/init.d/atbridge stop; ifdown wwan; nohup sh -c "qfirehose -f /tmp/eg25-fw/EG25GGBR07A08M2G_30.007.30.007 -l /tmp/eg25-fw; echo QFIREHOSE_EXIT=$?" > /tmp/eg25-fw/flash.log 2>&1 &; tail /tmp/eg25-fw/flash.log'
+# BusyBox has no nohup; ubus reported unreachable by the init script -> checking ubusd/netifd, killing any socat on ttyUSB2, starting qfirehose with ( ... ) > log 2>&1 < /dev/null &
+tools/rt 'pidof ubusd netifd procd; ubus list; pkill -f ttyUSB2; ( qfirehose -f /tmp/eg25-fw/EG25GGBR07A08M2G_30.007.30.007 -l /tmp/eg25-fw; echo QFIREHOSE_EXIT=$? ) > /tmp/eg25-fw/flash.log 2>&1 < /dev/null &; tail /tmp/eg25-fw/flash.log'
+# flash in progress: EDL 05c6:9008, 56% at 22 s; polling /tmp/eg25-fw/flash.log
+tools/rt 'sleep 45; pidof qfirehose; grep -E "upgrade progress|QFIREHOSE_EXIT|successfully|error|fail" /tmp/eg25-fw/flash.log | tail; usb id; ls /dev/ttyUSB* /dev/cdc-wdm*'
+# qfirehose: Upgrade module successfully, exit 0; modem back as 2c7c:0125 with cdc-wdm0
+tools/rt 'ATI; AT+QGMR; AT+GSN; AT+QCFG="usbnet"; AT+QPRTPARA=4; AT+QDSIM?; AT+QSIMVOL?; AT+CPIN?; AT+QSIMSTAT?; AT+QCCID; AT+CEREG?; AT+QENG="servingcell"; logread | grep simei; ifup wwan; ifstatus wwan'
+# post-flash: QGMR 30.007.30.007, IMEI kept, usbnet 0, SIM still CME 10 -> hardware; ubus refuses connections in ssh sessions -> diagnosing
+tools/rt 'ls -la /var/run/ubus/; ps w | grep "ubusd\|netifd\|rpcd\|procd"; ubus -s /var/run/ubus/ubus.sock list; id; logread | tail -12; uci get system.@system[0].hostname; uptime'
+curl -s -o /dev/null -w "%{http_code}" http://192.168.1.107/cgi-bin/luci/ ; curl ... http://192.168.1.107:7681/
+# Linear SFT-140: reflash result, hardware conclusion
+# ubus socket present (ubus:ubus, srw-rw-rw-), ubusd/rpcd/netifd alive, root cannot connect, logread fails, LuCI 500, uptime 1:52 (no reboot since power-on)
+tools/rt 'ls /proc/1339/fd | wc -l; grep "open files" /proc/1339/limits; grep -c ubus.sock /proc/net/unix'
+# ubusd not fd-exhausted (18 fds) but unreachable; user approved a reboot
+tools/rt reboot; poll ssh 192.168.1.107 / 100.111.153.32; then: uptime; ip -4 addr show br-lan; ubus list; ifstatus wwan; ls /dev/cdc-wdm* /dev/ttyUSB*; simei usbmode; AT+QGMR; AT+CPIN?; logread | grep simei; ps | grep socat/ttyd
+# router not reachable 6 min after reboot on .107 / tailscale -> serial console check, LAN ARP sweep for MAC 02:00:51:25:f0:41, tailscale status
+tools/serial.sh run -w 6 "uptime; ip -4 addr show br-lan; ubus list; pidof tailscaled"
+ping sweep 192.168.1.0/24; arp -a | grep 2:0:51:25:f0:41
+/Applications/Tailscale.app/Contents/MacOS/Tailscale status | grep orangepi
+# board not back after reboot: no MAC on LAN, tailscale offline since the reboot, USB-serial adapter missing on the Mac -> asking for LED/cable check; polling 3 more minutes
+ioreg -p IOUSB -w0 -l | grep -c FT232R; poll arp/ssh for 3 min
+# serial adapter re-plugged by the user
+tools/serial.sh status; tools/serial.sh run -w 8 "uptime; ip -4 addr show br-lan; ubus list; pidof tailscaled"; raw socat capture 10 s
+ping 192.168.1.107; arp -a | grep 2:0:51:25:f0:41; tailscale status | grep orangepi
+# serial node appeared mid-check (open: Permission denied on the fresh node); retrying the console
+ls -la /dev/cu.usbserial*; tools/serial.sh run -w 8 "uptime; ip -4 addr show br-lan; ubus list; pidof tailscaled"; raw socat capture
+# the sandbox hides/denies the re-created serial node (ls: no match, open: Permission denied) -> serial console commands re-run outside the sandbox
+ls -la /dev/cu.usbserial*; tools/serial.sh status; tools/serial.sh run -w 8 "uptime; ip -4 addr show br-lan; ubus list; pidof tailscaled"; raw socat capture
+# even unsandboxed: no /dev/cu.usbserial node; checking the Mac USB tree for the FTDI adapter and polling the board again
+ioreg -p IOUSB -w0 -l | grep -i "FT232\|usb serial"; ioreg -p IOUSB -w0; ping 192.168.1.107; arp -a | grep 2:0:51:25:f0:41; tailscale status | grep orangepi
+# user: connect via ssh (the USB dock with the FTDI adapter is disconnected: XHC1 only shows the phone now)
+ssh root@{192.168.1.107,100.111.153.32,orangepi-lte,orangepi-lte.local,orangepi-lte.lan}; LAN sweep; arp -a | grep 2:0:51
+/Applications/Tailscale.app/Contents/MacOS/Tailscale ping orangepi-lte
+# new LAN host 192.168.1.101 (d4:9d:c0:43:2a:41) appeared; testing ssh/.101 ports; OUI lookup; ssh retry .107 / tailscale
+ssh root@192.168.1.101 / .107 / 100.111.153.32; nc -z 192.168.1.101 22 / 7681; curl https://api.macvendors.com/d4:9d:c0
+# .101 = Samsung device (phone), not the board; board absent from LAN and tailscale 20 min after reboot -> boot failure/hang suspected; asking for a power cycle + serial (dock) reconnection
+# user power-cycled the board (no serial); polling LAN/tailscale up to 3 min, then verification
+poll ssh 192.168.1.107 / 100.111.153.32 + arp for 02:00:51:25:f0:41; then: uptime; ubus list; ifstatus wwan; simei usbmode; AT+QGMR; AT+CPIN?; logread | grep simei; df -h; dmesg | grep -i "error|fail|corrupt"
+# still not reachable after the power cycle; serial console required (dock with the FTDI adapter is unplugged from the Mac)
+# user: "connected board only to dock" -> checking whether the FTDI adapter is back on the Mac and whether the board is on the network
+ioreg -p IOUSB -w0 -l | grep -c FT232R; ls -la /dev/cu.usbserial*; tools/serial.sh status; ping 192.168.1.107; arp -a | grep 2:0:51:25:f0:41; tailscale status | grep orangepi
+# no FTDI on the Mac, board absent -> the dock is not connected to the Mac; clarifying whether the dock also powers the board
+# user: "modem only connected" -> checking the Mac USB tree for the Quectel EG25-G (2c7c:0125) and serial nodes
+ioreg -p IOUSB -w0 -l | grep -i quectel; ls -la /dev/cu.*
+# EG25-G enumerated on the Mac via the dock hub (no macOS driver -> no serial node); checking for a Linux VM with USB passthrough and for Quectel drivers
+ls /Applications | grep -i "utm|parallels|vmware|virtualbox|docker|orbstack"; pgrep -fl qemu|UTM|...; arp -a | grep bridge100; kextstat | grep -i quectel; systemextensionsctl list
+# user: install drivers (for the EG25-G on macOS); researching Quectel macOS driver; checking VMware Fusion VMs (USB passthrough), multipass, libusb/pyusb
+vmrun list; ls ~/Virtual Machines.localized; multipass list; brew list --versions libusb; python3 -c "import usb.core"
+# no macOS driver for the EG25-G exists (Quectel forum: would need patched Apple WWAN kexts); VMware Fusion has no VMs; multipass has no USB passthrough -> user-space USB via libusb/pyusb
+python3 -m pip install --user pyusb
+# wrote tools/tests/test_quectel_usb_at.py first (fake port; at_command, is_final, pick_bulk_endpoints)
+# pip --user refused (PEP 668) -> venv ~/.venvs/quectel with pyusb
+python3 -m venv ~/.venvs/quectel; ~/.venvs/quectel/bin/pip install pyusb
+python3 -m unittest tools/tests/test_quectel_usb_at.py   # red: module not written yet
+# wrote tools/quectel_usb_at.py (pyusb: claim the AT interface, DTR/RTS, bulk AT); dumping the EG25-G descriptors from the Mac with pyusb
+~/.venvs/quectel/bin/python - <<EOF  (usb.core.find 2c7c:0125; list configurations/interfaces/endpoints)
+python3 -m unittest -v tools/tests/test_quectel_usb_at.py
+~/.venvs/quectel/bin/python tools/quectel_usb_at.py --list
+~/.venvs/quectel/bin/python tools/quectel_usb_at.py --timeout 4 AT ATI AT+QGMR AT+GSN "AT+CPIN?" "AT+QSIMSTAT?" AT+QCCID "AT+CEREG?"
+# quectel_usb_at.py: 8/8 unit tests; live AT from the Mac works (30.007, IMEI 867698046226489); SIM still CME 10 with the modem powered by the dock -> holder dead on any host
+git add tools/quectel_usb_at.py tools/tests/test_quectel_usb_at.py README.md claudehistoryfile.txt; git commit (tools: AT over USB to the EG25-G from the Mac without a kernel driver); git push

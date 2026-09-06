@@ -113,6 +113,18 @@ COPS, CEREG); `fake_lpac.sh` emulates lpac and records the environment it is cal
 blank-IMEI case), the live dashboard frame, the eSIM commands and the lpac backend environment,
 `switch`, and the text TUI.
 
+## Talking to the modem from the Mac
+
+macOS has no driver for the EG25-G's vendor-class serial ports, but a user-space program may claim
+them. `tools/quectel_usb_at.py` (pyusb in `~/.venvs/quectel`, libusb from Homebrew) claims the AT
+interface (2), asserts DTR/RTS like the Linux usb_wwan driver and exchanges AT commands over the
+bulk endpoints; `--list` prints the interfaces. Unit tests: `python3 -m unittest
+tools/tests/test_quectel_usb_at.py`.
+
+```
+~/.venvs/quectel/bin/python tools/quectel_usb_at.py 'AT+CPIN?' 'AT+QCCID'
+```
+
 ## Known limits
 
 - `modemband` is not in the 25.12 feeds; `modemband` and `luci-app-modemband` come from the

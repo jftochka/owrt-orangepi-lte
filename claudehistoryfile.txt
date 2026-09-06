@@ -861,3 +861,17 @@ sh simei/usr/sbin/simei luhn 867698046226489
 # Linear SFT-140 comment (IMEI restored, SIM path defective); memory updated
 # QSIMVOL 3V/1.8V: still CME 10; reverted to auto. Conclusion: EG25-G USB board SIM path defective. Linear SFT-140 closed out with findings (issue stays open, blocked on hardware)
 git add claudehistoryfile.txt; git commit (claudehistoryfile: SIM holder diagnosis, NV restore); git push
+# user asks for research on resetting/reflashing the EG25-G firmware
+tools/rt 'ATI; AT+QGMR; AT+QAPPVER; AT+QSUBSYSVER; ls /dev/ttyUSB*; apk search qfirehose; apk search luci-app-qfirehose; df -h /tmp /overlay'
+curl -s https://raw.githubusercontent.com/4IceG/luci-app-qfirehose/main/README.md
+curl -s "https://forums.quectel.com/search.json?q=..." (SIM not inserted after power off; QPRTPARA; EG25GGBR07A08M2G firmware; factory reset EFS)
+# firmware EG25GGBR07A08M2G_01.002.01.002; qfirehose-1.5.1-r1 + luci-app-qfirehose-2.1.0 available from the 4IceG repo; /tmp 1.9G free
+# web research: EG25-G SIM not inserted after power loss / QFirehose update vs factory package / firmware source / AT-level EFS reset
+# research fetches: Biktorgj/quectel_eg25_recovery README + install.sh (EG25GGBR07A08M2G_01.002.01.002 branch), Quectel forum 23017 (reset to factory state), 58620 (USIM_VDD drops to 0 V after 1.8/3.0 V attempt)
+# research fetch: Biktorgj/quectel_eg25_recovery branch list (available stock firmware versions)
+# wrote docs/eg25g-firmware-reset.md (reset options, reflash procedure with qfirehose, holder diagnosis)
+# user chose: prepare the reflash with the newest stock branch EG25GGBR07A08M2G_30.206.30.206
+tools/rt 'apk add qfirehose luci-app-qfirehose; apk list --installed qfirehose luci-app-qfirehose'
+curl -s "https://api.github.com/repos/Biktorgj/quectel_eg25_recovery/git/trees/EG25GGBR07A08M2G_30.206.30.206?recursive=1"
+tools/rt 'cd /tmp/eg25-fw && wget -O fw.tar.gz https://github.com/Biktorgj/quectel_eg25_recovery/archive/refs/heads/EG25GGBR07A08M2G_30.206.30.206.tar.gz; tar -tzf fw.tar.gz'
+git add docs/eg25g-firmware-reset.md claudehistoryfile.txt; git commit (docs: EG25-G reset and reflash research); git push

@@ -832,3 +832,6 @@ git add simei/usr/sbin/simei simei/etc/hotplug.d/tty/90-simei simei/tests/run.sh
 # router: 98 passed with the guard deployed; simei usbmode on the real modem = usbnet=0 (qmi); SIM still CME 10
 # Linear: SFT-239 -> Done with the implementation note
 git add claudehistoryfile.txt; git commit (claudehistoryfile: 2026-09-06 session); git remote -v; git push
+tools/rt 'simei at "AT+CPIN?"; simei at "AT+QSIMSTAT?"; simei at "AT+CEREG?"; ifstatus wwan'   # SIM re-check while waiting for the reseat
+# wrote docs/upstream-lpac-uqmi-env.md: draft of the openwrt/packages report for SFT-142 (not filed)
+git add docs/upstream-lpac-uqmi-env.md claudehistoryfile.txt; git commit (docs: draft upstream report for the lpac uqmi driver environment); git push

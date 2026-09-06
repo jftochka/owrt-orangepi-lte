@@ -94,7 +94,7 @@ ls -la /dev/ttyUSB* /dev/cdc-wdm* 2>/dev/null || true
 netstat -ltn 2>/dev/null | grep -E ':(80|443|5000|7681|7682) ' || true
 echo "== done"
 
-echo "== lpac: AT backend on the modem's second AT port (the uqmi backend of lpac 2.3.0 fails on this build)"
+echo "== lpac: AT backend on the modem's second AT port (the feed's uqmi driver reads LPAC_QMI_DEV, its wrapper does not set it; SFT-142)"
 uci set lpac.global.apdu_backend='at'
 uci set lpac.at.device='/dev/ttyUSB3'
 uci commit lpac

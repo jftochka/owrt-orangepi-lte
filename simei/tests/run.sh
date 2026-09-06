@@ -184,6 +184,12 @@ if run esim download 'not-a-code' >/dev/null 2>&1; then bad "esim download: bad 
 if run switch 8948099999999999999 --yes >/dev/null 2>&1; then bad "switch: unknown ICCID accepted"; else ok "switch: unknown ICCID rejected"; fi
 out=$(printf 'esim\nback\nexit\n' | run); expect "tui: esim menu lists profiles" '8948010010087197546' "$out"
 
+# 10b. uqmi eSIM backend: the OpenWrt lpac uqmi driver reads LPAC_QMI_DEV, not LPAC_APDU_QMI_DEVICE (SFT-142)
+: > "$T/esim.log"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/fake-wdm0 run esim info)
+expect "esim uqmi backend: EID read" 'EID *: *89044045900000000000000912484375' "$out"
+expect "esim uqmi backend: LPAC_QMI_DEV handed to lpac" '^env LPAC_APDU=uqmi LPAC_QMI_DEV=/dev/fake-wdm0$' "$(cat "$T/esim.log")"
+
 # 11. blank (all-zero) IMEI: Luhn-valid but must be rejected and never stored
 if run luhn 000000000000000 >/dev/null 2>&1; then bad "luhn: all-zero IMEI accepted"; else ok "luhn: all-zero IMEI rejected"; fi
 echo 000000000000000 > "$STATE/imei"; echo 8948030000000000003 > "$STATE/iccid"; rm -f "$T/factory"

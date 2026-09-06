@@ -5,6 +5,8 @@
 S=${LPAC_STATE:?LPAC_STATE}
 [ -f "$S" ] || : > "$S"
 printf '%s\n' "$*" >> "$S.log"
+# record the backend environment simei hands to lpac: OpenWrt's uqmi driver reads LPAC_QMI_DEV (SFT-142)
+printf 'env LPAC_APDU=%s LPAC_QMI_DEV=%s\n' "${LPAC_APDU:-}" "${LPAC_QMI_DEV:-}" >> "$S.log"
 
 ok()  { printf '{"type":"lpa","payload":{"code":0,"message":"success","data":%s}}\n' "${1:-null}"; }
 err() { printf '{"type":"lpa","payload":{"code":-1,"message":"%s","data":""}}\n' "$1"; exit 1; }

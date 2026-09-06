@@ -555,7 +555,10 @@ lpac_run() {  # lpac args -> JSON on stdout
 		esim_prep
 		LPAC_APDU=at LPAC_APDU_AT_DEVICE="$ESIM_TTY" LPAC_HTTP=curl run_with_timeout "$secs" "$bin" "$@" 2>/dev/null
 	else
-		LPAC_APDU="$ESIM_BACKEND" LPAC_APDU_QMI_DEVICE="$QMI_DEV" LPAC_HTTP=curl run_with_timeout "$secs" "$bin" "$@" 2>/dev/null
+		# OpenWrt's uqmi driver (feed patch 0001-driver-add-uqmi-backend) reads LPAC_QMI_DEV; the
+		# feed's own wrapper only sets LPAC_APDU_QMI_DEVICE, which leaves the device NULL (SFT-142)
+		LPAC_APDU="$ESIM_BACKEND" LPAC_APDU_QMI_DEVICE="$QMI_DEV" LPAC_QMI_DEV="$QMI_DEV" LPAC_HTTP=curl \
+			run_with_timeout "$secs" "$bin" "$@" 2>/dev/null
 	fi
 }
 

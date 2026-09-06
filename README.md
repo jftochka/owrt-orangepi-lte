@@ -105,17 +105,25 @@ ssh root@<router-ip> 'sh /usr/lib/simei/tests/run.sh'   on the board (real uci)
 ```
 
 `fake_modem.sh` emulates the EG25-G AT responses (IMEI read/write, CFUN restart, CCID, CSQ,
-COPS, CEREG); `fake_lpac.sh` emulates lpac. 80 checks cover Luhn, status parsing, profiles,
-move/swap, apply (incl. refusal paths and the blank-IMEI case), the live dashboard frame,
-the eSIM commands, `switch`, and the text TUI.
+COPS, CEREG); `fake_lpac.sh` emulates lpac and records the environment it is called with.
+82 checks cover Luhn, status parsing, profiles, move/swap, apply (incl. refusal paths and the
+blank-IMEI case), the live dashboard frame, the eSIM commands and the lpac backend environment,
+`switch`, and the text TUI.
 
 ## Known limits
 
-- `luci-app-modemband` is not installed: its dependency `modemband` is not in the 25.12 feeds
-  and 4IceG publishes no build for it. Band locking can be done with `AT+QCFG="band",...`
-  from `simei at` or the SMS tool's AT page.
-- lpac 2.3.0's uqmi backend fails (`euicc_init`) on this build; the AT backend is used.
+- `modemband` is not in the 25.12 feeds; `modemband` and `luci-app-modemband` come from the
+  4IceG signed apk repository instead (`tools/05-modemband.sh`). Band locking also works with
+  `AT+QCFG="band",...` from `simei at` or the SMS tool's AT page.
+- lpac 2.3.0's uqmi backend fails (`euicc_init`) through the stock wrapper: the OpenWrt feed's
+  uqmi driver reads `LPAC_QMI_DEV`, which `/usr/bin/lpac` never sets. simei exports it, but the
+  AT backend stays the default until the uqmi path is verified with a readable eUICC (SFT-142).
 - The LTE link with the current (blank) IMEI registers but did not pass traffic; LAN is the
   preferred default route until an IMEI is assigned and the link verified.
 - The web TUI iframe needs LuCI over plain http (mixed content); the page shows a direct link
   when LuCI is opened over https.
+
+## Project handoff
+
+The [September 6 handoff](docs/handoff-2026-09-06.md) records the repository baseline,
+last known device state, current Linear work queue, and verification limits.

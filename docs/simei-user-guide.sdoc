@@ -248,8 +248,11 @@ STATEMENT: >>>
 - LuCI > Network > Interfaces > **wwan**: the LTE connection (QMI, APN ``internet``); change the
   APN there if the operator needs another one.
 - ``uqmi -d /dev/cdc-wdm0 --get-signal-info`` and ``--get-serving-system`` from a shell.
-- Band locking: ``simei at 'AT+QCFG="band",0,0x80000,0'`` style commands (see the Quectel
-  EG25-G AT manual); ``luci-app-modemband`` could not be installed on 25.12.1.
+- LuCI > Modem > **Preferred LTE/5G Bands**: band locking through ``modemband`` (both packages come
+  from the 4IceG apk repository, installed by ``tools/05-modemband.sh``); from a shell
+  ``modemband.sh getbands`` and ``modemband.sh setbands "3 7 20"``. The raw equivalent is
+  ``simei at 'AT+QCFG="band",0,0x80000,0'`` (see the Quectel EG25-G AT manual). modemband and
+  the SMS tool use ``/dev/ttyUSB2``, the port behind the AT bridge: one client at a time.
 <<<
 
 [[/SECTION]]
@@ -276,6 +279,7 @@ TITLE: Re-creating the router from scratch
 STATEMENT: >>>
 Flash the official OpenWrt 25.12.1 image for xunlong_orangepi-zero3, connect serial and Ethernet,
 then run in order: ``tools/01-bootstrap-net.sh``, ``tools/rt - < tools/02-install.sh``,
+``tools/rt - < tools/05-modemband.sh`` (4IceG apk repository: ``modemband`` + LuCI band page),
 ``tools/rt push simei /``, ``tools/rt - < tools/03-configure.sh``, ``tools/rt - < tools/04-tailscale.sh``
 (open the printed login URL once). If the modem is in ECM mode
 (``AT+QCFG="usbnet"`` returns 1) switch it to QMI with ``AT+QCFG="usbnet",0`` and ``AT+CFUN=1,1``.
@@ -291,8 +295,12 @@ STATEMENT: >>>
 - **simei: cannot reach the AT bridge**: ``/etc/init.d/atbridge restart``; check ``ls /dev/ttyUSB*``.
 - **Registration: searching / No Service**: ``simei at 'AT+QENG="servingcell"'`` shows whether a
   cell is seen; a blank IMEI can be rejected by the network - assign one and ``simei apply``.
-- **lpac: euicc_init**: another program holds ``/dev/ttyUSB3`` or echo is on; ``simei esim info``
-  sends ``ATE0`` first. Only the ``at`` backend works with lpac 2.3.0 on this build.
+- **lpac: euicc_init**: first check that the modem sees the eUICC at all: ``simei at 'AT+QSIMSTAT?'``
+  must answer ``1`` in the second field and ``AT+CPIN?`` must not return CME ERROR 10 or 13;
+  otherwise reseat the card and ``simei at 'AT+CFUN=1,1'``. Then: another program holds
+  ``/dev/ttyUSB3`` or echo is on; ``simei esim info`` sends ``ATE0`` first. The ``at`` backend is
+  the default; the feed's uqmi driver needs ``LPAC_QMI_DEV``, which simei sets but the stock
+  ``/usr/bin/lpac`` wrapper does not (SFT-142).
 - **Web TUI page empty in LuCI**: LuCI was opened over https; use ``http://`` or the direct link
   shown on the page.
 - **Board unreachable after a DHCP change**: look up the new address (home router, or

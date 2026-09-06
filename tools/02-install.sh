@@ -22,11 +22,12 @@ echo "== eSIM (lpac), jq, GNU timeout/sleep (BusyBox lacks timeout and fractiona
 apk add lpac jq coreutils-timeout coreutils-sleep
 
 echo "== 4IceG modem apps (unsigned, from GitHub releases)"
+# luci-app-modemband is not here: its `modemband` dependency is missing from the 25.12.1
+# feeds, so both come from the 4IceG signed apk repository instead (tools/05-modemband.sh).
 mkdir -p /tmp/4iceg && cd /tmp/4iceg
 for u in \
 	https://github.com/4IceG/luci-app-3ginfo-lite/releases/download/1.0.77-r20260215/luci-app-3ginfo-lite-1.0.77-r20260215.apk \
 	https://github.com/4IceG/luci-app-sms-tool-js/releases/download/2.0.42-r20260831/luci-app-sms-tool-js-2.0.42-r20260831.apk \
-	https://github.com/4IceG/luci-app-modemband/releases/download/1.0.31-r20260215/luci-app-modemband-1.0.31-r20260215.apk \
 	; do
 	f=${u##*/}
 	[ -s "$f" ] || wget -q -O "$f" "$u" || { echo "download failed: $u"; rm -f "$f"; }

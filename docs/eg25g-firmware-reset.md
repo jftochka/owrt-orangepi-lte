@@ -32,9 +32,16 @@ the holder (bent or shorted spring contact, debris, broken trace) has a high one
 2. Firmware package: stock recovery packages are mirrored at
    https://github.com/Biktorgj/quectel_eg25_recovery (PinePhone community), one branch per version:
    `EG25GGBR07A08M2G_01.002.01.002` (the version on this board: a same-version flash is the
-   "firmware reset"), `_01.003.01.003`, `_30.004.30.004`, `_30.007.30.007`, `_30.200.30.200`,
-   `_30.202.30.202`, `_30.203.30.203`, `_30.206.30.206`, plus older A07 builds. The official
-   route is a request on forums.quectel.com or to the module vendor.
+   "firmware reset"), `_01.003.01.003`, `_30.004.30.004`, `_30.006.30.006`, `_30.007.30.007`,
+   `_30.200.30.200`, `_30.202.30.202`, `_30.203.30.203` (newest), plus `_01.001.10`,
+   `_01.002.07` and older A07 builds (GitHub API branch list, 2026-09-06). Every branch has
+   the same layout (`update/` with `firehose/`, `md5.txt`, `contents.xml`, Quectel release notes
+   PDF). Do not use the `30.20x` branches on this board: their README says they are Quectel's
+   "200" line for newer hardware revisions, "may be incompatible in older modems and might
+   render the IMEI unusable", and they contain a third-party bootloader. `01.003.01.003` is the
+   direct successor of the installed `01.002.01.002` on the standard line and carries no such
+   warning; `30.00x` is the PinePhone-oriented line. The official route is a request on
+   forums.quectel.com or to the module vendor.
    Put the package under `/tmp` (1.9 GB tmpfs; the overlay has 30 MB free). It must contain
    `update/firehose/`.
 3. Flash: LuCI > Modem > QFirehose, choose the package directory and the modem's USB port, Flash;

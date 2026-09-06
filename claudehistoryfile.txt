@@ -875,3 +875,21 @@ tools/rt 'apk add qfirehose luci-app-qfirehose; apk list --installed qfirehose l
 curl -s "https://api.github.com/repos/Biktorgj/quectel_eg25_recovery/git/trees/EG25GGBR07A08M2G_30.206.30.206?recursive=1"
 tools/rt 'cd /tmp/eg25-fw && wget -O fw.tar.gz https://github.com/Biktorgj/quectel_eg25_recovery/archive/refs/heads/EG25GGBR07A08M2G_30.206.30.206.tar.gz; tar -tzf fw.tar.gz'
 git add docs/eg25g-firmware-reset.md claudehistoryfile.txt; git commit (docs: EG25-G reset and reflash research); git push
+# qfirehose 1.5.1 + luci-app-qfirehose 2.1.0 installed; the 30.206 branch name gave 404 -> listing branches/tags/releases via the GitHub API
+curl -s https://api.github.com/repos/Biktorgj/quectel_eg25_recovery/branches ; .../tags ; .../releases ; .../contents/
+# real branches: newest EG25GGBR07A08M2G_30.203.30.203 (doc corrected); fetching its layout/README; downloading the tarball to the router /tmp/eg25-fw; qfirehose -h smoke test
+curl -s "https://api.github.com/repos/Biktorgj/quectel_eg25_recovery/contents/?ref=EG25GGBR07A08M2G_30.203.30.203"; curl -s ".../git/trees/EG25GGBR07A08M2G_30.203.30.203?recursive=1"; curl -s https://raw.githubusercontent.com/Biktorgj/quectel_eg25_recovery/EG25GGBR07A08M2G_30.203.30.203/README.md
+tools/rt 'qfirehose -h; cd /tmp/eg25-fw && wget -O fw.tar.gz https://github.com/Biktorgj/quectel_eg25_recovery/archive/refs/heads/EG25GGBR07A08M2G_30.203.30.203.tar.gz; tar -tzf fw.tar.gz'
+# 30.203 README warns: Quectel "200" line for newer hardware revisions, may render the IMEI unusable, contains a custom bootloader -> not for this board; checking 01.003.01.003 and 30.007.30.007 READMEs/layouts
+curl -s https://raw.githubusercontent.com/Biktorgj/quectel_eg25_recovery/<branch>/README.md ; curl -s "https://api.github.com/repos/Biktorgj/quectel_eg25_recovery/git/trees/<branch>?recursive=1"
+# 01.003.01.003 and 30.007 have no warnings; 01.003 recommended (successor of the installed 01.002 on the standard line)
+tools/rt 'cd /tmp/eg25-fw && wget -O EG25GGBR07A08M2G_01.003.01.003.tar.gz https://github.com/Biktorgj/quectel_eg25_recovery/archive/refs/heads/EG25GGBR07A08M2G_01.003.01.003.tar.gz && tar -xzf ... && md5sum -c md5.txt'
+# docs/eg25g-firmware-reset.md: 30.20x warning + recommendation
+# user chose 30.007.30.007; md5sum -c reported 22/22 mismatches for 01.003 -> inspecting md5.txt format and hashing by basename; downloading 30.007 and checking the same way
+tools/rt 'cd /tmp/eg25-fw/EG25GGBR07A08M2G_01.003.01.003 && head -4 md5.txt | cat -A; hash check by basename'
+tools/rt 'cd /tmp/eg25-fw && wget -O EG25GGBR07A08M2G_30.007.30.007.tar.gz https://github.com/Biktorgj/quectel_eg25_recovery/archive/refs/heads/EG25GGBR07A08M2G_30.007.30.007.tar.gz && tar -xzf ... && hash check by basename'
+# md5.txt parse gave empty paths on the router (suspect UTF-16/CRLF); verifying 30.007 on the Mac: curl md5.txt, iconv/normalize, compare with tools/rt md5sum by basename
+# md5.txt is Quectel's manifest format (FILE:\update\name:HASH, CRLF), not md5sum format; comparing parsed manifest vs router md5sum for 30.007
+# 30.007 verified: 18/18 manifest hashes match (targetfiles.zip = OTA artifact, not in the package); pre-flight snapshot; committing the doc correction
+tools/rt 'AT+QGMR; AT+GSN; AT+QCFG="usbnet"; AT+QPRTPARA=4; ls /dev/ttyUSB* /dev/cdc-wdm*; processes holding ttyUSB; /etc/init.d/atbridge status; ifstatus wwan'
+git add docs/eg25g-firmware-reset.md claudehistoryfile.txt; git commit (docs: branch list correction, 30.20x warning); git push

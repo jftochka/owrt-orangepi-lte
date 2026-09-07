@@ -976,3 +976,4 @@ strictdoc export --formats=html2pdf docs/simei-user-guide.sdoc  # PDF regenerate
 # docs: README (backends, doctor, config, 144 checks), user guide CLI-6 + troubleshooting, upstream draft rewritten
 # with the second and third defects; tools/03-configure.sh sets lpac.uqmi.device and simei esim_* defaults
 git add -A; git commit (simei: harden the lpac uqmi APDU path); git push
+TEST_SH="busybox ash" sh simei/tests/run.sh   # run.sh now splits $SH, so the router's shell can run the suite: 144 passed

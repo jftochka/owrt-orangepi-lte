@@ -119,6 +119,7 @@ Keys: the Mac key `~/.ssh/id_ed25519.pub` and the phone key `~/.ssh/orangepi_pho
 ```
 sh simei/tests/run.sh                 on the Mac (needs socat and jq; uses tests/uci-shim)
 TEST_SH=dash sh simei/tests/run.sh    same under dash
+TEST_SH="busybox ash" sh simei/tests/run.sh   same under the router's shell
 ssh root@<router-ip> 'sh /usr/lib/simei/tests/run.sh'   on the board (real uci)
 ```
 

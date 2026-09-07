@@ -1,7 +1,8 @@
 #!/bin/sh
 # simei test suite.
 # Runs on a host (macOS/Linux: uses tests/uci-shim) and on OpenWrt (real uci). Needs socat.
-#   sh simei/tests/run.sh            (TEST_SH=dash to run the script under dash, TEST_PORT to change the port)
+#   sh simei/tests/run.sh            (TEST_SH=dash or TEST_SH="busybox ash" to run the script under
+#                                     another shell, TEST_PORT to change the port)
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -63,7 +64,9 @@ bad() { fail=$((fail + 1)); echo "FAIL - $1"; [ -n "${2:-}" ] && printf '%s\n' "
 # expect NAME "pattern" "text"  -> text must contain a line matching the ERE
 expect() { if printf '%s\n' "$3" | grep -qE "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
 reject() { if printf '%s\n' "$3" | grep -qE "$2"; then bad "$1" "$3"; else ok "$1"; fi; }
-run() { "$SH" "$SIMEI" "$@" 2>&1; }
+# $SH is split on purpose so TEST_SH can name an interpreter with arguments, e.g. "busybox ash"
+# (the shell the router actually runs simei with)
+run() { $SH "$SIMEI" "$@" 2>&1; }
 
 # 1. syntax
 if sh -n "$SIMEI"; then ok "sh -n simei"; else bad "sh -n simei"; fi

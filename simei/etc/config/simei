@@ -8,4 +8,9 @@ config global 'global'
 	option auto_apply '0'
 	option esim_backend 'at'
 	option esim_tty '/dev/ttyUSB3'
+	# esim_backend: at | uqmi | auto (auto tries uqmi first and falls back to at)
+	# esim_debug 1 makes lpac and the uqmi driver log their traffic; esim_retries is the
+	# number of extra attempts after an euicc_init / no-answer failure (SFT-142)
+	option esim_debug '0'
+	option esim_retries '1'
 

@@ -36,9 +36,23 @@ APPLY_TIMEOUT=${SIMEI_APPLY_TIMEOUT:-90}
 NO_ANSI=${SIMEI_NO_ANSI:-0}
 ESIM_BACKEND=${SIMEI_ESIM_BACKEND:-$(cfg global.esim_backend)}; ESIM_BACKEND=${ESIM_BACKEND:-at}
 ESIM_TTY=${SIMEI_ESIM_TTY:-$(cfg global.esim_tty)};             ESIM_TTY=${ESIM_TTY:-/dev/ttyUSB3}
+ESIM_DEBUG=${SIMEI_ESIM_DEBUG:-$(cfg global.esim_debug)};       ESIM_DEBUG=${ESIM_DEBUG:-0}
+ESIM_RETRIES=${SIMEI_ESIM_RETRIES:-$(cfg global.esim_retries)}; ESIM_RETRIES=${ESIM_RETRIES:-1}
+ESIM_RETRY_DELAY=${SIMEI_ESIM_RETRY_DELAY:-2}
+UQMI_TIMEOUT=${SIMEI_UQMI_TIMEOUT:-10}
+LPAC_LOCK=${SIMEI_LPAC_LOCK:-${TMPDIR:-/tmp}/simei-lpac.lock}
+LOCK_WAIT=${SIMEI_LPAC_LOCK_WAIT:-30}
 LPAC=${SIMEI_LPAC:-}
+LPAC_STDERR=/dev/null
+LOCK_HELD=0
 ESIM_PREPPED=0
 AT_PID=; AT_TMP=
+# these end up in arithmetic and in [ -ge ] tests; bad UCI values must not break the script
+case $ESIM_DEBUG in 1) ;; *) ESIM_DEBUG=0 ;; esac
+case $ESIM_RETRIES in ''|*[!0-9]*) ESIM_RETRIES=1 ;; esac
+case $ESIM_RETRY_DELAY in ''|*[!0-9]*) ESIM_RETRY_DELAY=2 ;; esac
+case $UQMI_TIMEOUT in ''|*[!0-9]*|0) UQMI_TIMEOUT=10 ;; esac
+case $LOCK_WAIT in ''|*[!0-9]*) LOCK_WAIT=30 ;; esac
 
 # ---- helpers -----------------------------------------------------------------
 die() { printf 'simei: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -562,6 +576,65 @@ lpac_bin() {
 	else command -v lpac; fi
 }
 
+# /usr/bin/lpac is a shell wrapper that re-exports the lpac UCI section and therefore
+# discards the backend environment simei sets; simei calls /usr/lib/lpac directly.
+lpac_is_wrapper() {
+	[ -f "$1" ] || return 1
+	head -n1 "$1" 2>/dev/null | grep -q '^#!' || return 1
+	grep -q '/usr/lib/lpac' "$1" 2>/dev/null
+}
+
+# The feed's uqmi APDU driver interpolates the device path into popen("uqmi -s -d %s ..."),
+# so anything but a plain path reaches a shell unquoted (SFT-142).
+dev_shell_safe() { case $1 in ''|*[!A-Za-z0-9/._-]*) return 1 ;; esac; return 0; }
+
+uqmi_client_id() {  # -> a UIM client id from the modem, or 1 with no output
+	local id
+	id=$(run_with_timeout "$UQMI_TIMEOUT" uqmi -s -d "$QMI_DEV" --get-client-id uim 2>/dev/null | tr -dc '0-9')
+	[ -n "$id" ] && [ "$id" != 0 ] || return 1
+	printf '%s\n' "$id"
+}
+
+uqmi_release_id() {  # a probe must not keep the client id it allocated
+	[ -n "${1:-}" ] || return 0
+	run_with_timeout "$UQMI_TIMEOUT" uqmi -s -d "$QMI_DEV" --set-client-id "uim,$1" --release-client-id uim >/dev/null 2>&1
+}
+
+# 0 when the uqmi APDU path is worth attempting; the reason goes to stderr. Without this the
+# driver fails inside lpac and every cause looks like the same bare "euicc_init".
+esim_uqmi_preflight() {
+	local id
+	have uqmi || { echo "uqmi is not installed (apk add uqmi)" >&2; return 1; }
+	[ -n "$QMI_DEV" ] || { echo "no QMI device configured (uci set simei.global.qmi_dev=/dev/cdc-wdm0)" >&2; return 1; }
+	dev_shell_safe "$QMI_DEV" || { echo "QMI device path '$QMI_DEV' is not a plain path and the driver passes it through a shell" >&2; return 1; }
+	[ -c "$QMI_DEV" ] || { echo "$QMI_DEV is not a character device (is the modem in QMI mode? simei usbmode)" >&2; return 1; }
+	id=$(uqmi_client_id) || { echo "no UIM client id from $QMI_DEV (modem busy, or client ids leaked: simei restart modem)" >&2; return 1; }
+	uqmi_release_id "$id"
+	return 0
+}
+
+# One eSIM operation at a time: the eUICC is reached through a single AT port or a single UIM
+# client, and two concurrent lpac runs leave a logical channel open behind them.
+esim_lock() {
+	local waited=0 owner
+	owner=$(cat "$LPAC_LOCK/pid" 2>/dev/null)
+	if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$LPAC_LOCK" 2>/dev/null; fi
+	while ! mkdir "$LPAC_LOCK" 2>/dev/null; do
+		[ "$waited" -ge "$LOCK_WAIT" ] && return 1
+		sleep 1; waited=$((waited + 1))
+	done
+	echo $$ > "$LPAC_LOCK/pid" 2>/dev/null
+	LOCK_HELD=1
+	return 0
+}
+
+esim_unlock() {
+	[ "$LOCK_HELD" = 1 ] || return 0
+	LOCK_HELD=0
+	rm -rf "$LPAC_LOCK" 2>/dev/null
+	return 0
+}
+
 esim_prep() {  # quiet AT port for lpac's AT backend: raw, echo off
 	[ "$ESIM_PREPPED" = 1 ] && return 0
 	ESIM_PREPPED=1
@@ -571,29 +644,89 @@ esim_prep() {  # quiet AT port for lpac's AT backend: raw, echo off
 	sleep 1
 }
 
-lpac_run() {  # lpac args -> JSON on stdout
-	local bin secs=${LPAC_TIMEOUT:-60}
+lpac_env_run() {  # BACKEND SECS bin args... -> the raw lpac output
+	local backend=$1 secs=$2; shift 2
+	if [ "$backend" = at ]; then
+		esim_prep
+		LPAC_APDU=at LPAC_APDU_AT_DEVICE="$ESIM_TTY" LPAC_APDU_AT_DEBUG="$ESIM_DEBUG" LPAC_HTTP=curl \
+			run_with_timeout "$secs" "$@" 2>>"$LPAC_STDERR"
+	else
+		# The feed's uqmi driver (patch 0001-driver-add-uqmi-backend) reads LPAC_QMI_DEV and
+		# LPAC_QMI_DEBUG, while the feed's wrapper exports LPAC_APDU_QMI_DEVICE and
+		# LPAC_APDU_UQMI_DEBUG; with only the wrapper's names the device path stays NULL and
+		# lpac fails with a bare euicc_init. Export both spellings (SFT-142).
+		LPAC_APDU="$backend" LPAC_APDU_QMI_DEVICE="$QMI_DEV" LPAC_QMI_DEV="$QMI_DEV" \
+			LPAC_APDU_UQMI_DEBUG="$ESIM_DEBUG" LPAC_QMI_DEBUG="$ESIM_DEBUG" LPAC_HTTP=curl \
+			run_with_timeout "$secs" "$@" 2>>"$LPAC_STDERR"
+	fi
+}
+
+# lpac prints progress objects, and the uqmi driver prints UQMI_DEBUG_TX/RX lines, before the
+# result: keep the last {"type":"lpa",...} object and drop everything else.
+lpac_result() { printf '%s\n' "$1" | jq -R -c 'fromjson? | select(type == "object" and .type == "lpa")' 2>/dev/null | tail -n1; }
+lpac_msg()    { printf '%s' "$1" | jq -r '.payload.message // ""' 2>/dev/null; }
+lpac_ok()     { [ "$(printf '%s' "$1" | jq -r '.payload.code // -1' 2>/dev/null)" = 0 ]; }
+lpac_error_json() {  # message -> a failure in lpac's own shape, so callers stay uniform
+	printf '{"type":"lpa","payload":{"code":-1,"message":"%s","data":""}}\n' \
+		"$(printf '%s' "$1" | tr -d '"\\' | tr '\n' ' ')"
+}
+
+# Only transport/initialisation failures are worth a second attempt or another backend;
+# an eUICC answer such as es10c_delete_profile is a real result and is reported as it is.
+lpac_retryable() {
+	case $(lpac_msg "$1") in
+		euicc_init*|*'no answer'*) return 0 ;;
+	esac
+	return 1
+}
+
+esim_backend_list() {  # backends to try, in order (auto = uqmi with AT as the fallback)
+	case $ESIM_BACKEND in
+		auto) echo "uqmi at" ;;
+		*)    echo "$ESIM_BACKEND" ;;
+	esac
+}
+
+lpac_run() {  # lpac args -> the final lpac JSON object on stdout; 0 when lpac reported success
+	local bin secs=${LPAC_TIMEOUT:-60} b try reason out res last=
 	bin=$(lpac_bin) || true
 	[ -n "$bin" ] || die "lpac is not installed (apk add lpac jq)" 5
 	have jq || die "jq is not installed (apk add jq)" 5
 	case $1 in profile) [ "$2" = download ] && secs=300 ;; esac
-	if [ "$ESIM_BACKEND" = at ]; then
-		esim_prep
-		LPAC_APDU=at LPAC_APDU_AT_DEVICE="$ESIM_TTY" LPAC_HTTP=curl run_with_timeout "$secs" "$bin" "$@" 2>/dev/null
-	else
-		# OpenWrt's uqmi driver (feed patch 0001-driver-add-uqmi-backend) reads LPAC_QMI_DEV; the
-		# feed's own wrapper only sets LPAC_APDU_QMI_DEVICE, which leaves the device NULL (SFT-142)
-		LPAC_APDU="$ESIM_BACKEND" LPAC_APDU_QMI_DEVICE="$QMI_DEV" LPAC_QMI_DEV="$QMI_DEV" LPAC_HTTP=curl \
-			run_with_timeout "$secs" "$bin" "$@" 2>/dev/null
-	fi
+	esim_lock || { lpac_error_json "another eSIM operation is running (lock $LPAC_LOCK)"; return 1; }
+	for b in $(esim_backend_list); do
+		if [ "$b" = uqmi ] && ! reason=$(esim_uqmi_preflight 2>&1); then
+			last=$(lpac_error_json "$b backend unusable: $reason")
+			continue
+		fi
+		try=0
+		while :; do
+			out=$(lpac_env_run "$b" "$secs" "$bin" "$@")
+			res=$(lpac_result "$out")
+			[ -n "$res" ] || res=$(lpac_error_json "no answer from lpac on the $b backend (timeout ${secs}s)")
+			last=$res
+			if lpac_ok "$res"; then esim_unlock; printf '%s\n' "$res"; return 0; fi
+			lpac_retryable "$res" || break 2
+			[ "$try" -ge "$ESIM_RETRIES" ] && break
+			try=$((try + 1))
+			[ "$ESIM_RETRY_DELAY" -gt 0 ] && sleep "$ESIM_RETRY_DELAY"   # the eUICC is busy for a moment after a killed run
+		done
+	done
+	esim_unlock
+	printf '%s\n' "$last"
+	return 1
 }
 
-lpac_check() {  # JSON -> 0 when payload.code == 0, else message on stderr and 1
+lpac_check() {  # JSON -> 0 when payload.code == 0, else message (and a hint) on stderr and 1
 	local code msg
 	code=$(printf '%s' "$1" | jq -r '.payload.code // -1' 2>/dev/null)
 	[ "$code" = 0 ] && return 0
-	msg=$(printf '%s' "$1" | jq -r '.payload.message // "no answer"' 2>/dev/null)
+	msg=$(lpac_msg "$1")
 	printf 'lpac: %s (code %s)\n' "${msg:-no answer from lpac}" "${code:--}" >&2
+	case $msg in
+		euicc_init*|*unusable*|*'no answer'*)
+			printf 'hint: the eSIM path did not answer on the %s backend; run: simei esim doctor\n' "$ESIM_BACKEND" >&2 ;;
+	esac
 	return 1
 }
 
@@ -612,7 +745,11 @@ esim_info() {
 	j=$(lpac_run chip info) || true
 	lpac_check "$j" || return 5
 	printf '%s' "$j" | jq -r '.payload.data | "EID         : \(.eidValue)\nSM-DP+      : \(.EuiccConfiguredAddresses.defaultDpAddress // "-")\nFree memory : \(.EUICCInfo2.extCardResource.freeNonVolatileMemory // "?") bytes\nInstalled   : \(.EUICCInfo2.extCardResource.installedApplication // "?") applications\nFirmware    : \(.EUICCInfo2.euiccFirmwareVer // "?")  (SGP.22 \(.EUICCInfo2.svn // "?"))"'
-	printf 'LPA backend : %s%s\n' "$ESIM_BACKEND" "$([ "$ESIM_BACKEND" = at ] && printf ' (%s)' "$ESIM_TTY")"
+	case $ESIM_BACKEND in
+		at)   printf 'LPA backend : at (%s)\n' "$ESIM_TTY" ;;
+		auto) printf 'LPA backend : auto (uqmi %s, then at %s)\n' "$QMI_DEV" "$ESIM_TTY" ;;
+		*)    printf 'LPA backend : %s (%s)\n' "$ESIM_BACKEND" "$QMI_DEV" ;;
+	esac
 }
 
 esim_list() {
@@ -708,6 +845,97 @@ esim_download() {  # activation-code [confirmation-code]
 	esim_list
 }
 
+# ---- eSIM diagnostics ----------------------------------------------------------------
+# Every eUICC failure inside lpac surfaces as the same bare "euicc_init"; this walks the same
+# path step by step so the failing step is named. Exit 0 only when chip info really answers.
+DOCTOR_RC=0
+dr_ok()   { printf '  ok    %-18s %s\n' "$1" "$2"; }
+dr_warn() { printf '  warn  %-18s %s\n' "$1" "$2"; }
+dr_fail() { printf '  FAIL  %-18s %s\n' "$1" "$2"; DOCTOR_RC=1; }
+
+esim_doctor() {  # [--debug]
+	local a bin id state j eid msg err raw first
+	DOCTOR_RC=0
+	for a in "$@"; do case $a in --debug|-d) ESIM_DEBUG=1 ;; esac; done
+	printf 'simei %s - eSIM diagnostics\n\n' "$VERSION"
+
+	bin=$(lpac_bin) || bin=
+	if [ -z "$bin" ]; then dr_fail "lpac" "not installed (apk add lpac)"
+	elif lpac_is_wrapper "$bin"; then
+		dr_warn "lpac" "$bin is the UCI wrapper; it re-exports the lpac config and ignores simei's backend environment"
+	else dr_ok "lpac" "$bin"; fi
+	if have jq; then dr_ok "jq" "$(command -v jq)"; else dr_fail "jq" "not installed (apk add jq)"; fi
+	if have timeout; then dr_ok "timeout" "$(command -v timeout)"; else dr_warn "timeout" "not installed; simei uses a shell watchdog (apk add coreutils-timeout)"; fi
+
+	case $ESIM_BACKEND in
+		at|uqmi|auto) dr_ok "backend" "$ESIM_BACKEND (uci get simei.global.esim_backend)" ;;
+		*) dr_fail "backend" "unknown backend '$ESIM_BACKEND', expected at|uqmi|auto" ;;
+	esac
+
+	case $ESIM_BACKEND in
+		at)   if [ -c "$ESIM_TTY" ]; then dr_ok "AT port" "$ESIM_TTY"; else dr_fail "AT port" "$ESIM_TTY is not a character device (ls /dev/ttyUSB*)"; fi ;;
+		auto) if [ -c "$ESIM_TTY" ]; then dr_ok "AT port" "$ESIM_TTY (fallback)"; else dr_warn "AT port" "$ESIM_TTY is not a character device; the AT fallback is unavailable"; fi ;;
+	esac
+
+	case $ESIM_BACKEND in uqmi|auto)
+		if have uqmi; then dr_ok "uqmi" "$(command -v uqmi)"; else dr_fail "uqmi" "not installed (apk add uqmi)"; fi
+		if [ -c "$QMI_DEV" ]; then dr_ok "QMI device" "$QMI_DEV"
+		else dr_fail "QMI device" "$QMI_DEV is not a character device (is the modem in QMI mode? simei usbmode)"; fi
+		dev_shell_safe "$QMI_DEV" || dr_fail "QMI device path" "'$QMI_DEV' is not a plain path; the driver interpolates it into a shell command"
+		[ "$QMI_DEV" = /dev/cdc-wdm0 ] || dr_warn "QMI device path" "the feed's driver hardcodes /dev/cdc-wdm0 while opening the UIM client, so $QMI_DEV is used only afterwards"
+		if have uqmi && [ -c "$QMI_DEV" ] && dev_shell_safe "$QMI_DEV"; then
+			if id=$(uqmi_client_id); then
+				dr_ok "UIM client id" "$id (released again)"
+				uqmi_release_id "$id"
+			else
+				dr_fail "UIM client id" "none from $QMI_DEV (modem busy, or client ids leaked: simei restart modem)"
+			fi
+			state=$(run_with_timeout "$UQMI_TIMEOUT" uqmi -s -d "$QMI_DEV" --uim-get-sim-state 2>&1 | tr -d '\n' | cut -c1-140)
+			case $state in
+				''|'{}'|'{ }') dr_fail "UIM card state" "empty: the modem reports no SIM/eUICC on slot 1 (SFT-140)" ;;
+				*rror*|*nvalid*) dr_warn "UIM card state" "$state" ;;
+				*) dr_ok "UIM card state" "$state" ;;
+			esac
+		fi ;;
+	esac
+
+	printf '\n'
+	[ "$ESIM_DEBUG" = 1 ] && err=$(mktemp "${TMPDIR:-/tmp}/simei-doctor.XXXXXX") && LPAC_STDERR=$err
+	j=$(lpac_run chip info) || true
+	msg=$(lpac_msg "$j")
+	if lpac_ok "$j"; then
+		eid=$(printf '%s' "$j" | jq -r '.payload.data.eidValue // "?"' 2>/dev/null)
+		dr_ok "lpac chip info" "EID $eid"
+	else
+		dr_fail "lpac chip info" "${msg:-no answer from lpac}"
+	fi
+
+	if [ "$ESIM_DEBUG" = 1 ] && [ -n "$bin" ] && esim_lock; then
+		first=$(esim_backend_list | awk '{ print $1 }')
+		raw=$(lpac_env_run "$first" 30 "$bin" chip info)
+		esim_unlock
+		printf '\n--- raw lpac output (%s backend) ---\n%s\n' "$first" "${raw:-(none)}"
+		[ -n "${err:-}" ] && [ -s "$err" ] && printf -- '--- lpac stderr ---\n%s\n' "$(cat "$err")"
+		LPAC_STDERR=/dev/null
+		[ -n "${err:-}" ] && rm -f "$err"
+	fi
+
+	case $msg in
+		*unusable*)
+			printf '\nThe uqmi APDU path was not attempted; fix the FAIL above, or fall back to the AT backend:\n'
+			printf '  uci set simei.global.esim_backend=at; uci commit simei\n' ;;
+		euicc_init*|*'no answer'*)
+			printf '\neuicc_init means lpac never opened a logical channel to the eUICC. Known causes:\n'
+			printf '  - the modem reports no SIM/eUICC   see the UIM card state above, and: simei at "AT+CPIN?"\n'
+			printf '  - lpac ran through /usr/bin/lpac   the wrapper re-exports the lpac UCI section (uci show lpac)\n'
+			printf '  - the channel itself is refused    uqmi -d %s --uim-slot 1 --uim-channel-open A0000005591010FFFFFFFF8900000100\n' "$QMI_DEV"
+			printf '  - the AT backend still works       uci set simei.global.esim_backend=at; uci commit simei\n' ;;
+	esac
+	printf '\n'
+	if [ "$DOCTOR_RC" = 0 ]; then echo "eSIM path is healthy."; else echo "eSIM path has failures (see FAIL above)."; fi
+	return "$DOCTOR_RC"
+}
+
 cmd_esim() {
 	local sub=${1:-list}
 	[ $# -gt 0 ] && shift
@@ -719,7 +947,8 @@ cmd_esim() {
 		delete|del|rm)       esim_delete "$@" ;;
 		nickname|nick|rename) esim_nickname "$@" ;;
 		download|dl)         esim_download "$@" ;;
-		*) die "usage: simei esim info|list|enable|disable|delete|nickname|download ..." 64 ;;
+		doctor|diag|check)   esim_doctor "$@" ;;
+		*) die "usage: simei esim info|list|enable|disable|delete|nickname|download|doctor ..." 64 ;;
 	esac
 }
 
@@ -768,11 +997,13 @@ $rows"; return 0; }
 		done <<EOR
 $rows
 EOR
-		set -- "$@" download "Download a new profile (activation code)" info "eUICC info (EID, memory)" back "Back"
+		set -- "$@" download "Download a new profile (activation code)" info "eUICC info (EID, memory)" \
+			doctor "Diagnose the eSIM path (backend, device, eUICC)" back "Back"
 		sel=$(ui_menu "eSIM profiles" "Select a profile" "$@") || return 0
 		case $sel in
 			back) return 0 ;;
 			info) ui_msg "eUICC" "$(esim_info 2>&1)" ;;
+			doctor) ui_msg "eSIM diagnostics" "$(esim_doctor 2>&1)" ;;
 			download)
 				v=$(ui_input "Download profile" "Activation code (LPA:1\$smdp\$matching-id)" "LPA:1\$") || continue
 				act=$(ui_input "Download profile" "Confirmation code (empty if none)" "") || continue
@@ -913,6 +1144,7 @@ simei $VERSION - SIM / IMEI manager (Quectel EG25-G, OpenWrt)
   simei esim delete <iccid> [--yes]
   simei esim nickname <iccid> <name>
   simei esim download <LPA:1$smdp$id> [confirmation-code]
+  simei esim doctor [--debug]    check the eSIM path step by step (backend, device, eUICC)
   simei at "<AT command>"        raw AT command via the bridge
   simei luhn <14|15 digits>      compute / verify the IMEI check digit
   simei restart modem|wwan|bridge

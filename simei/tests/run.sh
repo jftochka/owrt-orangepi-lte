@@ -1,7 +1,8 @@
 #!/bin/sh
 # simei test suite.
 # Runs on a host (macOS/Linux: uses tests/uci-shim) and on OpenWrt (real uci). Needs socat.
-#   sh simei/tests/run.sh            (TEST_SH=dash to run the script under dash, TEST_PORT to change the port)
+#   sh simei/tests/run.sh            (TEST_SH=dash or TEST_SH="busybox ash" to run the script under
+#                                     another shell, TEST_PORT to change the port)
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -34,10 +35,19 @@ echo 490154203237518 > "$STATE/imei"
 echo 8938001111111111111 > "$STATE/iccid"
 echo 20 > "$STATE/csq"
 
-# fake uqmi for the live dashboard
+# fake uqmi: signal info for the live dashboard, UIM client ids and card state for the eSIM
+# preflight (UQMI_FAKE_NO_CLIENT / UQMI_FAKE_SIM_STATE simulate a modem that cannot serve them)
 cat > "$T/bin/uqmi" <<'EOF'
 #!/bin/sh
-echo '{"type":"lte","rssi":-65,"rsrq":-9,"rsrp":-95,"snr":12.4}'
+case " $* " in
+	*--get-client-id*)     [ "${UQMI_FAKE_NO_CLIENT:-0}" = 1 ] || echo 2 ;;
+	*--release-client-id*) ;;
+	*--uim-get-sim-state*)
+		if [ -n "${UQMI_FAKE_SIM_STATE:-}" ]; then printf '%s\n' "$UQMI_FAKE_SIM_STATE"
+		else echo '{"card_state":"present","application_state":"ready"}'; fi ;;
+	*--uim-channel-open*)  echo '{"channel_id":1}' ;;
+	*) echo '{"type":"lte","rssi":-65,"rsrq":-9,"rsrp":-95,"snr":12.4}' ;;
+esac
 EOF
 chmod +x "$T/bin/uqmi"
 PATH="$T/bin:$PATH"
@@ -54,7 +64,9 @@ bad() { fail=$((fail + 1)); echo "FAIL - $1"; [ -n "${2:-}" ] && printf '%s\n' "
 # expect NAME "pattern" "text"  -> text must contain a line matching the ERE
 expect() { if printf '%s\n' "$3" | grep -qE "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
 reject() { if printf '%s\n' "$3" | grep -qE "$2"; then bad "$1" "$3"; else ok "$1"; fi; }
-run() { "$SH" "$SIMEI" "$@" 2>&1; }
+# $SH is split on purpose so TEST_SH can name an interpreter with arguments, e.g. "busybox ash"
+# (the shell the router actually runs simei with)
+run() { $SH "$SIMEI" "$@" 2>&1; }
 
 # 1. syntax
 if sh -n "$SIMEI"; then ok "sh -n simei"; else bad "sh -n simei"; fi
@@ -184,11 +196,104 @@ if run esim download 'not-a-code' >/dev/null 2>&1; then bad "esim download: bad 
 if run switch 8948099999999999999 --yes >/dev/null 2>&1; then bad "switch: unknown ICCID accepted"; else ok "switch: unknown ICCID rejected"; fi
 out=$(printf 'esim\nback\nexit\n' | run); expect "tui: esim menu lists profiles" '8948010010087197546' "$out"
 
-# 10b. uqmi eSIM backend: the OpenWrt lpac uqmi driver reads LPAC_QMI_DEV, not LPAC_APDU_QMI_DEVICE (SFT-142)
+# 10b. uqmi eSIM backend (SFT-142). /dev/null stands in for the QMI device: the preflight only
+# needs a character device, and the fake uqmi answers whatever is asked of it.
+export SIMEI_ESIM_RETRY_DELAY=0 SIMEI_LPAC_LOCK="$T/lpac.lock"
 : > "$T/esim.log"
-out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/fake-wdm0 run esim info)
-expect "esim uqmi backend: EID read" 'EID *: *89044045900000000000000912484375' "$out"
-expect "esim uqmi backend: LPAC_QMI_DEV handed to lpac" '^env LPAC_APDU=uqmi LPAC_QMI_DEV=/dev/fake-wdm0$' "$(cat "$T/esim.log")"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim info)
+elog=$(cat "$T/esim.log")
+expect "esim uqmi: EID read" 'EID *: *89044045900000000000000912484375' "$out"
+expect "esim uqmi: backend line names the QMI device" 'LPA backend *: *uqmi \(/dev/null\)' "$out"
+expect "esim uqmi: LPAC_QMI_DEV set (the name the driver reads)" 'LPAC_QMI_DEV=/dev/null' "$elog"
+expect "esim uqmi: LPAC_APDU_QMI_DEVICE set (the name the wrapper exports)" 'LPAC_APDU_QMI_DEVICE=/dev/null' "$elog"
+
+# the debug flag reaches both spellings, and the driver's debug output must not break the result
+: > "$T/esim.log"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null SIMEI_ESIM_DEBUG=1 run esim info)
+elog=$(cat "$T/esim.log")
+expect "esim uqmi: LPAC_QMI_DEBUG set" 'LPAC_QMI_DEBUG=1' "$elog"
+expect "esim uqmi: LPAC_APDU_UQMI_DEBUG set" 'LPAC_APDU_UQMI_DEBUG=1' "$elog"
+expect "esim uqmi: driver debug lines do not break the JSON result" 'EID *: *89044045900000000000000912484375' "$out"
+
+# 10c. preflight: name the failing step instead of letting lpac report a bare euicc_init
+: > "$T/esim.log"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/no-such-wdm run esim info 2>&1); rc=$?
+if [ $rc -ne 0 ]; then ok "esim preflight: missing QMI device fails"; else bad "esim preflight: missing device accepted" "$out"; fi
+expect "esim preflight: missing device named" 'not a character device' "$out"
+expect "esim preflight: points at the doctor" 'simei esim doctor' "$out"
+reject "esim preflight: lpac not called without a device" 'chip info' "$(cat "$T/esim.log")"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV='/dev/cdc-wdm0; reboot' run esim info 2>&1)
+expect "esim preflight: shell-unsafe device path refused" 'not a plain path' "$out"
+out=$(UQMI_FAKE_NO_CLIENT=1 SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim info 2>&1)
+expect "esim preflight: no UIM client id named" 'no UIM client id' "$out"
+out=$(PATH="$HERE/uci-shim:/usr/bin:/bin" SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim info 2>&1)
+expect "esim preflight: missing uqmi named" 'uqmi is not installed' "$out"
+
+# 10d. transient euicc_init is retried once; a real eUICC answer is reported as it is
+echo 1 > "$T/lpac-fail"; : > "$T/esim.log"
+out=$(LPAC_FAIL_COUNT_FILE="$T/lpac-fail" SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim info)
+expect "esim retry: succeeds on the second attempt" 'EID *: *89044045900000000000000912484375' "$out"
+expect "esim retry: lpac called twice" '^2$' "$(grep -c '^chip info' "$T/esim.log")"
+echo 5 > "$T/lpac-fail"; : > "$T/esim.log"
+out=$(LPAC_FAIL_COUNT_FILE="$T/lpac-fail" SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim info 2>&1); rc=$?
+if [ $rc -ne 0 ]; then ok "esim retry: gives up after the configured retries"; else bad "esim retry: reported success" "$out"; fi
+expect "esim retry: bounded at one retry" '^2$' "$(grep -c '^chip info' "$T/esim.log")"
+expect "esim retry: euicc_init reported" 'euicc_init' "$out"
+: > "$T/esim.log"
+out=$(run esim disable 8948099999999999999 2>&1)
+expect "esim retry: an eUICC error is not retried" '^1$' "$(grep -c '^profile disable' "$T/esim.log")"
+
+# 10e. auto backend: uqmi first, AT when the uqmi path cannot serve the request
+: > "$T/esim.log"
+out=$(SIMEI_ESIM_BACKEND=auto SIMEI_QMI_DEV=/dev/no-such-wdm run esim info)
+expect "esim auto: falls back when the uqmi preflight fails" 'EID *: *89044045900000000000000912484375' "$out"
+expect "esim auto: the fallback ran on AT" 'LPAC_APDU=at' "$(cat "$T/esim.log")"
+: > "$T/esim.log"
+out=$(LPAC_FAIL_BACKENDS=uqmi SIMEI_ESIM_BACKEND=auto SIMEI_QMI_DEV=/dev/null run esim info)
+elog=$(cat "$T/esim.log")
+expect "esim auto: falls back on euicc_init" 'EID *: *89044045900000000000000912484375' "$out"
+expect "esim auto: uqmi is tried first" 'LPAC_APDU=uqmi' "$elog"
+expect "esim auto: AT served the result" 'LPAC_APDU=at' "$elog"
+
+# 10f. one eSIM operation at a time (the eUICC has a single channel)
+mkdir -p "$T/lpac.lock"; echo $$ > "$T/lpac.lock/pid"
+out=$(SIMEI_LPAC_LOCK_WAIT=0 run esim info 2>&1); rc=$?
+if [ $rc -ne 0 ]; then ok "esim lock: a held lock stops a second run"; else bad "esim lock: ran anyway" "$out"; fi
+expect "esim lock: says what is holding it" 'another eSIM operation' "$out"
+sh -c 'exit 0' & dead=$!; wait $dead 2>/dev/null
+echo "$dead" > "$T/lpac.lock/pid"
+out=$(SIMEI_LPAC_LOCK_WAIT=0 run esim info 2>&1)
+expect "esim lock: a lock from a dead run is cleared" 'EID *: *89044045900000000000000912484375' "$out"
+if [ -d "$T/lpac.lock" ]; then bad "esim lock: lock left behind after the run"; else ok "esim lock: released after the run"; fi
+
+# 10g. doctor: walks the same path step by step and exits non-zero when a step fails
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim doctor); rc=$?
+if [ $rc -eq 0 ]; then ok "esim doctor: exit 0 on a healthy path"; else bad "esim doctor: exit $rc" "$out"; fi
+expect "esim doctor: client id probe" 'ok +UIM client id +2' "$out"
+expect "esim doctor: card state" 'ok +UIM card state' "$out"
+expect "esim doctor: chip info EID" 'ok +lpac chip info +EID 89044045900000000000000912484375' "$out"
+expect "esim doctor: healthy summary" 'eSIM path is healthy' "$out"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/no-such-wdm run esim doctor); rc=$?
+if [ $rc -ne 0 ]; then ok "esim doctor: exit non-zero when a check fails"; else bad "esim doctor: reported healthy" "$out"; fi
+expect "esim doctor: names the missing QMI device" 'FAIL +QMI device' "$out"
+expect "esim doctor: says the uqmi path was not attempted" 'uqmi APDU path was not attempted' "$out"
+expect "esim doctor: names the AT fallback" 'esim_backend=at' "$out"
+out=$(LPAC_FAIL_BACKENDS=uqmi SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim doctor); rc=$?
+if [ $rc -ne 0 ]; then ok "esim doctor: exit non-zero on euicc_init"; else bad "esim doctor: reported healthy" "$out"; fi
+expect "esim doctor: lists the euicc_init causes" 'euicc_init means lpac never opened' "$out"
+out=$(UQMI_FAKE_SIM_STATE='{}' SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim doctor)
+expect "esim doctor: empty UIM card state flagged" 'FAIL +UIM card state' "$out"
+expect "esim doctor: points at the no-SIM cause" 'no SIM/eUICC' "$out"
+out=$(UQMI_FAKE_NO_CLIENT=1 SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim doctor)
+expect "esim doctor: missing client id flagged" 'FAIL +UIM client id' "$out"
+out=$(SIMEI_ESIM_BACKEND=uqmi SIMEI_QMI_DEV=/dev/null run esim doctor --debug)
+expect "esim doctor --debug: raw lpac output" 'raw lpac output \(uqmi backend\)' "$out"
+expect "esim doctor --debug: driver debug lines shown" 'UQMI_DEBUG_TX' "$out"
+out=$(SIMEI_ESIM_BACKEND=at run esim doctor)
+expect "esim doctor: AT backend checks the AT port" 'FAIL +AT port' "$out"
+out=$(SIMEI_ESIM_BACKEND=nonsense SIMEI_QMI_DEV=/dev/null run esim doctor)
+expect "esim doctor: unknown backend flagged" 'FAIL +backend' "$out"
+unset SIMEI_ESIM_RETRY_DELAY SIMEI_LPAC_LOCK
 
 # 11. blank (all-zero) IMEI: Luhn-valid but must be rejected and never stored
 if run luhn 000000000000000 >/dev/null 2>&1; then bad "luhn: all-zero IMEI accepted"; else ok "luhn: all-zero IMEI rejected"; fi

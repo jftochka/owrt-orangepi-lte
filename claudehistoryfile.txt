@@ -955,3 +955,24 @@ python3 -m unittest -v tools/tests/test_quectel_usb_at.py
 ~/.venvs/quectel/bin/python tools/quectel_usb_at.py --timeout 4 AT ATI AT+QGMR AT+GSN "AT+CPIN?" "AT+QSIMSTAT?" AT+QCCID "AT+CEREG?"
 # quectel_usb_at.py: 8/8 unit tests; live AT from the Mac works (30.007, IMEI 867698046226489); SIM still CME 10 with the modem powered by the dock -> holder dead on any host
 git add tools/quectel_usb_at.py tools/tests/test_quectel_usb_at.py README.md claudehistoryfile.txt; git commit (tools: AT over USB to the EG25-G from the Mac without a kernel driver); git push
+
+[2026-09-07] SFT-142: stabilise and harden the lpac 2.3.0 uqmi APDU backend (no router access this session)
+curl raw.githubusercontent.com openwrt/packages openwrt-25.12: utils/lpac/patches/0001-driver-add-uqmi-backend.patch, utils/lpac/files/lpac.sh
+# read the driver: besides the LPAC_QMI_DEV / LPAC_APDU_QMI_DEVICE mismatch, uqmi_open_client() passes a whole
+# command line ("uqmi -s -d /dev/cdc-wdm0 --get-client-id uim") into uqmi_execute_command(), which prefixes
+# "uqmi -s -d <devpath> " again -> the UIM client is opened on a hardcoded /dev/cdc-wdm0; devpath is also
+# interpolated into popen() unquoted and never checked for NULL
+apt-get install -y socat shellcheck; pip install strictdoc (venv, chromedriver-py==141.0.7390.54 for HTML2PDF)
+sh simei/tests/run.sh   # baseline 99 passed, 0 failed
+# simei: preflight (uqmi present, QMI device is a character device, plain path, UIM client id probed and released),
+# both env spellings + debug flags, /usr/lib/lpac preferred over the wrapper, mkdir lock (stale pid cleared),
+# retry of euicc_init / no-answer only, esim_backend auto (uqmi -> at), lpac_result keeps the last {"type":"lpa"}
+# object so driver debug lines cannot break parsing, and "simei esim doctor [--debug]"
+# tests: fake uqmi answers client-id/card-state/channel-open; fake_lpac logs both env spellings and fails on demand
+sh simei/tests/run.sh; TEST_SH=dash sh simei/tests/run.sh   # 144 passed, 0 failed under sh and dash
+# mutation checks: dropping LPAC_QMI_DEV -> 1 failure; disabling the preflight -> 10 failures
+shellcheck -s sh -S warning simei/usr/sbin/simei simei/tests/*.sh   # only the pre-existing 'local'/read -t notes
+strictdoc export --formats=html2pdf docs/simei-user-guide.sdoc  # PDF regenerated (15 pages)
+# docs: README (backends, doctor, config, 144 checks), user guide CLI-6 + troubleshooting, upstream draft rewritten
+# with the second and third defects; tools/03-configure.sh sets lpac.uqmi.device and simei esim_* defaults
+git add -A; git commit (simei: harden the lpac uqmi APDU path); git push

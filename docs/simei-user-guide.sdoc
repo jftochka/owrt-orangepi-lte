@@ -133,7 +133,8 @@ Lists every profile on the eUICC with its state, name/nickname and the IMEI assi
 Selecting a profile offers: **Switch** (enable it, restart the modem, write its IMEI),
 Enable, Disable, **Assign / change the IMEI for this SIM**, Set nickname, Delete. The menu also
 offers **Download a new profile** (activation code ``LPA:1$<smdp>$<matching-id>`` and, if the
-operator gave one, a confirmation code) and eUICC info (EID, free memory).
+operator gave one, a confirmation code), eUICC info (EID, free memory) and **Diagnose the eSIM
+path**, which runs the same checks as ``simei esim doctor``.
 <<<
 
 [REQUIREMENT]
@@ -177,10 +178,40 @@ STATEMENT: >>>
     simei esim [list] | info | enable <iccid> | disable <iccid>
     simei esim delete <iccid> [--yes] | nickname <iccid> <name>
     simei esim download 'LPA:1$smdp$id' [confirmation-code]
+    simei esim doctor [--debug]    check the eSIM path step by step
     simei at "AT+..."              raw AT command
     simei luhn <14|15 digits>      IMEI check digit
     simei restart modem|wwan|bridge
     simei usbmode [--fix]          USB mode (usbnet 0 = QMI); --fix switches and restarts
+<<<
+
+[REQUIREMENT]
+UID: CLI-6
+TITLE: eSIM backends and diagnostics
+STATEMENT: >>>
+simei reaches the eUICC through ``lpac``, over one of three backends set in
+``/etc/config/simei`` as ``esim_backend``:
+
+- ``at`` (the default) uses the modem's second AT port, ``esim_tty``, normally ``/dev/ttyUSB3``;
+- ``uqmi`` uses the QMI device, ``qmi_dev``, normally ``/dev/cdc-wdm0``;
+- ``auto`` tries uqmi first and falls back to ``at``.
+
+Before the uqmi path is used, simei checks that ``uqmi`` is installed, that the QMI device is a
+character device whose path is a plain path, and that the modem still gives out a UIM client id.
+A failing check is reported by name instead of arriving as lpac's bare ``euicc_init``. Only one
+eSIM operation runs at a time, and ``euicc_init`` / no-answer failures are retried
+``esim_retries`` times (1 by default); an answer from the eUICC itself, such as a refused
+delete, is reported as it is.
+
+``simei esim doctor`` walks the whole path and prints one line per step: lpac binary, ``jq``,
+the configured backend, the AT port or the QMI device, the UIM client id, the card state, and
+finally a real ``chip info``. It exits 0 only when the eUICC answered. ``--debug`` adds lpac's
+raw output, including the uqmi driver's shell traffic.
+
+.. code-block:: text
+
+    simei esim doctor
+    uci set simei.global.esim_backend=auto; uci commit simei   # uqmi first, AT as the fallback
 <<<
 
 [REQUIREMENT]
@@ -299,12 +330,17 @@ STATEMENT: >>>
 - **simei: cannot reach the AT bridge**: ``/etc/init.d/atbridge restart``; check ``ls /dev/ttyUSB*``.
 - **Registration: searching / No Service**: ``simei at 'AT+QENG="servingcell"'`` shows whether a
   cell is seen; a blank IMEI can be rejected by the network - assign one and ``simei apply``.
-- **lpac: euicc_init**: first check that the modem sees the eUICC at all: ``simei at 'AT+QSIMSTAT?'``
-  must answer ``1`` in the second field and ``AT+CPIN?`` must not return CME ERROR 10 or 13;
-  otherwise reseat the card and ``simei at 'AT+CFUN=1,1'``. Then: another program holds
-  ``/dev/ttyUSB3`` or echo is on; ``simei esim info`` sends ``ATE0`` first. The ``at`` backend is
-  the default; the feed's uqmi driver needs ``LPAC_QMI_DEV``, which simei sets but the stock
-  ``/usr/bin/lpac`` wrapper does not (SFT-142).
+- **lpac: euicc_init**: run ``simei esim doctor`` first - it names the failing step. Then check
+  that the modem sees the eUICC at all: ``simei at 'AT+QSIMSTAT?'`` must answer ``1`` in the
+  second field and ``AT+CPIN?`` must not return CME ERROR 10 or 13; otherwise reseat the card and
+  ``simei at 'AT+CFUN=1,1'``. On the ``at`` backend, another program may hold ``/dev/ttyUSB3`` or
+  echo may be on; ``simei esim info`` sends ``ATE0`` first. On the ``uqmi`` backend, the feed's
+  driver needs ``LPAC_QMI_DEV``, which simei sets but the stock ``/usr/bin/lpac`` wrapper does
+  not, and it opens its UIM client on a hardcoded ``/dev/cdc-wdm0`` (SFT-142). ``at`` stays the
+  default until the doctor passes on the uqmi path.
+- **Another eSIM operation is running**: only one lpac run is allowed at a time. If a run was
+  killed, the next command clears the stale lock by itself; a genuinely parallel run (TUI and
+  ssh at the same time) has to finish first.
 - **Web TUI page empty in LuCI**: LuCI was opened over https; use ``http://`` or the direct link
   shown on the page.
 - **Board unreachable after a DHCP change**: look up the new address (home router, or

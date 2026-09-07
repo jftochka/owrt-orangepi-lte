@@ -97,4 +97,18 @@ echo "== done"
 echo "== lpac: AT backend on the modem's second AT port (the feed's uqmi driver reads LPAC_QMI_DEV, its wrapper does not set it; SFT-142)"
 uci set lpac.global.apdu_backend='at'
 uci set lpac.at.device='/dev/ttyUSB3'
+# keep the uqmi section pointing at the real QMI device, so /usr/bin/lpac is consistent with
+# simei on the day the backend is switched over
+uci set lpac.uqmi=uqmi 2>/dev/null || true
+uci set lpac.uqmi.device='/dev/cdc-wdm0'
 uci commit lpac
+
+echo "== simei: eSIM backend (at for now; 'auto' tries uqmi first and falls back to at) - check with: simei esim doctor"
+uci -q get simei.global >/dev/null || uci set simei.global=global
+# defaults only: an operator who already picked a backend keeps it
+[ -n "$(uci -q get simei.global.esim_backend)" ] || uci set simei.global.esim_backend='at'
+[ -n "$(uci -q get simei.global.esim_tty)" ]     || uci set simei.global.esim_tty='/dev/ttyUSB3'
+[ -n "$(uci -q get simei.global.esim_debug)" ]   || uci set simei.global.esim_debug='0'
+[ -n "$(uci -q get simei.global.esim_retries)" ] || uci set simei.global.esim_retries='1'
+uci commit simei
+simei esim doctor || true

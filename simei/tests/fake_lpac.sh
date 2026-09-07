@@ -5,11 +5,26 @@
 S=${LPAC_STATE:?LPAC_STATE}
 [ -f "$S" ] || : > "$S"
 printf '%s\n' "$*" >> "$S.log"
-# record the backend environment simei hands to lpac: OpenWrt's uqmi driver reads LPAC_QMI_DEV (SFT-142)
-printf 'env LPAC_APDU=%s LPAC_QMI_DEV=%s\n' "${LPAC_APDU:-}" "${LPAC_QMI_DEV:-}" >> "$S.log"
+# Record the backend environment simei hands to lpac. OpenWrt's uqmi driver reads LPAC_QMI_DEV /
+# LPAC_QMI_DEBUG while the feed's wrapper exports LPAC_APDU_QMI_DEVICE / LPAC_APDU_UQMI_DEBUG,
+# so simei has to set both spellings (SFT-142).
+printf 'env LPAC_APDU=%s LPAC_QMI_DEV=%s LPAC_APDU_QMI_DEVICE=%s LPAC_QMI_DEBUG=%s LPAC_APDU_UQMI_DEBUG=%s LPAC_APDU_AT_DEVICE=%s\n' \
+	"${LPAC_APDU:-}" "${LPAC_QMI_DEV:-}" "${LPAC_APDU_QMI_DEVICE:-}" "${LPAC_QMI_DEBUG:-}" \
+	"${LPAC_APDU_UQMI_DEBUG:-}" "${LPAC_APDU_AT_DEVICE:-}" >> "$S.log"
+
+# the real uqmi driver prints its shell traffic on stdout before the result JSON
+[ "${LPAC_QMI_DEBUG:-0}" = 1 ] && printf 'UQMI_DEBUG_TX: uqmi -s -d %s --get-client-id uim\nUQMI_DEBUG_RX: 2\n' "${LPAC_QMI_DEV:-}"
 
 ok()  { printf '{"type":"lpa","payload":{"code":0,"message":"success","data":%s}}\n' "${1:-null}"; }
 err() { printf '{"type":"lpa","payload":{"code":-1,"message":"%s","data":""}}\n' "$1"; exit 1; }
+
+# Failure injection for the retry / backend-fallback tests: $LPAC_FAIL_BACKENDS lists backends
+# that always fail euicc_init, $LPAC_FAIL_COUNT_FILE holds a countdown of failing invocations.
+case " ${LPAC_FAIL_BACKENDS:-} " in *" ${LPAC_APDU:-} "*) err euicc_init ;; esac
+if [ -n "${LPAC_FAIL_COUNT_FILE:-}" ]; then
+	n=$(cat "$LPAC_FAIL_COUNT_FILE" 2>/dev/null); n=${n:-0}
+	if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$LPAC_FAIL_COUNT_FILE"; err euicc_init; fi
+fi
 
 set_state() {  # iccid newstate
 	awk -F'|' -v OFS='|' -v i="$1" -v s="$2" '$1 == i { $2 = s } { print }' "$S" > "$S.tmp" && mv "$S.tmp" "$S"
@@ -44,6 +59,7 @@ case "$1 $2" in
 		code=; shift 2
 		while [ $# -gt 0 ]; do case $1 in -a) code=$2; shift ;; -s|-m|-c|-i) shift ;; esac; shift; done
 		[ -n "$code" ] || err "es9p_initiate_authentication: no activation code"
+		printf '{"type":"progress","payload":{"code":0,"message":"es9p_initiate_authentication","data":null}}\n'
 		printf '8949000000000000001|disabled|Downloaded|%s|NewTel\n' "${code#LPA:1\$}" >> "$S"; ok ;;
 	*) err "unknown command $1 $2" ;;
 esac

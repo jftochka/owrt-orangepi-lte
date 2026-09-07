@@ -108,6 +108,9 @@ tools/rt - < tools/02-install.sh     packages (luci, luci-ssl, qmi stack, sms-to
 tools/rt push simei /                install / update simei on the board
 tools/rt - < tools/03-configure.sh   wwan, firewall, ttyd (7681 simei, 7682 shell), lpac, atbridge
 tools/rt - < tools/04-tailscale.sh   tailscale up --ssh (prints the login URL once)
+tools/rt - < tools/06-esim-uqmi-verify.sh   SFT-142 retest: read-only evidence for the uqmi
+                                     APDU path (AT/SIM state, uqmi UIM channel, lpac with debug,
+                                     simei esim doctor on both backends)
 ```
 
 Keys: the Mac key `~/.ssh/id_ed25519.pub` and the phone key `~/.ssh/orangepi_phone_ed25519`

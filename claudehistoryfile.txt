@@ -977,3 +977,7 @@ strictdoc export --formats=html2pdf docs/simei-user-guide.sdoc  # PDF regenerate
 # with the second and third defects; tools/03-configure.sh sets lpac.uqmi.device and simei esim_* defaults
 git add -A; git commit (simei: harden the lpac uqmi APDU path); git push
 TEST_SH="busybox ash" sh simei/tests/run.sh   # run.sh now splits $SH, so the router's shell can run the suite: 144 passed
+# tools/06-esim-uqmi-verify.sh: read-only SFT-142 retest for the board (AT/SIM state, uqmi UIM client and
+# ISD-R channel open, lpac with LPAC_QMI_DEV + debug, simei esim doctor on the configured and the uqmi backend)
+sh -n / dash -n / busybox ash -n / shellcheck tools/06-esim-uqmi-verify.sh
+git add tools/06-esim-uqmi-verify.sh README.md claudehistoryfile.txt; git commit (tools: SFT-142 retest script); git push
